@@ -11,6 +11,8 @@ except ImportError:
     raise
 
 # Charger les chemins depuis les variables d'environnement
+# Load paths from environment variables
+
 JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\java\\name_of_your_pack")
 BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\bedrock\\name_of_your_pack")
 CUSTOM_ITEMS_FILE = "custom_items.json"
@@ -20,6 +22,7 @@ if not JAVA_RP_DIR or not BEDROCK_RP_DIR:
     raise EnvironmentError("❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.")
 
 # Structure minimale
+# Minimal structure
 bedrock_structure = [
     "textures",
     "textures/item",
@@ -124,18 +127,21 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             
             if face == "up":
                 # CORRECTION: Pour la face du haut - mapping standard
+                # FIX: For the top face - standard mapping
                 return {
                     "uv": [round(u0, 5), round(v0, 5)],
                     "uv_size": [round(u1 - u0, 5), round(v1 - v0, 5)]
                 }
             elif face == "down":
                 # Pour la face du bas : inversion U et taille V négative
+                # For the bottom face: U inversion and negative V size
                 return {
                     "uv": [round(u1, 5), round(v1, 5)],
                     "uv_size": [round(u0 - u1, 5), round(v0 - v1, 5)]
                 }
             else:
                 # Faces latérales : mapping standard
+                # Side faces: standard mapping
                 return {
                     "uv": [round(u0, 5), round(v0, 5)],
                     "uv_size": [round(u1 - u0, 5), round(v1 - v0, 5)]
@@ -144,16 +150,18 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         def calculate_pivot_from_origin(origin):
             """Calcule le pivot Bedrock à partir de l'origine Java"""
             # CORRECTION: Conversion standard Java -> Bedrock : X-8, Y inchangé, Z-8
+            # FIX: Java -> Bedrock standard conversion: X-8, Y unchanged, Z-8
             return [
-                round(origin[0] - 14, 5),
+                round(origin[0] - 8, 5),
                 round(origin[1], 5),
-                round(origin[2] - 0, 5)
+                round(origin[2] - 8, 5)
             ]
 
         def build_bone(group, parent_name=None):
             name = group['name'].replace(' ', '').lower()
 
             # Calcul du pivot selon l'origine du groupe
+            # Calculation of the pivot according to the origin of the group
             if 'origin' in group and len(group['origin']) == 3:
                 bone_pivot = calculate_pivot_from_origin(group['origin'])
             else:
@@ -165,12 +173,15 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             sub_bones = []
 
             # Traitement des enfants du groupe
+            # Treatment of children in the group
             for child in group.get('children', []):
                 if isinstance(child, int):
                     # Enfant = élément géométrique
+                    # Child = geometric element
                     e = elements[child]
                     
                     # Conversion des coordonnées Java vers Bedrock
+                    # Converting coordinates from Java to Bedrock
                     cube_origin = [
                         round(e['from'][0] - 8, 5),
                         round(e['from'][1], 5),
@@ -185,6 +196,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                     }
 
                     # Mapping UV corrigé pour chaque face
+                    # Corrected UV mapping for each face
                     for face, data in e.get('faces', {}).items():
                         cube['uv'][face] = correct_uv_mapping(face, data)
 
@@ -192,21 +204,25 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
 
                 elif isinstance(child, dict):
                     # Enfant = sous-groupe (bone enfant)
+                    # Child = subgroup (child bone)
                     nested_bones = build_bone(child, parent_name=name)
                     sub_bones.extend(nested_bones)
                     children_names.append(nested_bones[0]['name'])
 
             # Construction de l'os
+            # Bone construction
             bone = {
                 "name": name,
                 "pivot": bone_pivot
             }
             
             # Ajout des cubes s'il y en a
+            # Adding cubes if there are any
             if cubes:
                 bone["cubes"] = cubes
             
             # CORRECTION: Hiérarchie parent-enfant correcte
+            # FIX: Correct parent-child hierarchy
             if parent_name:
                 bone["parent"] = parent_name
             if children_names:
@@ -216,6 +232,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             return [bone] + sub_bones
 
         # Construction de tous les os à partir des groupes
+        # Construction of all bones from groups
         bones = []
         for group in groups:
             if not isinstance(group, dict):
@@ -229,6 +246,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 print(f"❌ Erreur lors du traitement du groupe '{group.get('name', 'inconnu')}': {e}")
 
         # Construction des transformations d'affichage
+        # Building display transformations
         item_display_transforms = {}
         if "display" in model:
             for key, data in model["display"].items():
@@ -244,6 +262,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 item_display_transforms[key.lower()] = entry
 
         # Assemblage final du fichier géométrique
+        # Final assembly of the geometric file
         geo = {
             "format_version": "1.12.0",
             "minecraft:geometry": [
@@ -263,12 +282,14 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         }
 
         # Écriture du fichier .geo.json
+        # Writing the .geo.json file
         out_geo = os.path.join(BEDROCK_RP_DIR, 'models', 'entity', f'{output_name}.geo.json')
         print(f"💾 Écriture du fichier GEO : {out_geo}")
         with open(out_geo, 'w', encoding='utf-8') as f:
             json.dump(geo, f, indent='\t', separators=(',', ': '))
 
         # Génération du render controller
+        # Generating the render controller
         fixed_tex_key = texture_key.replace('\\', '/').split('.')[0]
         rc = {
             "format_version": "1.8.0",
@@ -304,7 +325,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
 
 
 
-
+### Sounds don't seem to be converted, i think geyser don't allow that part
 def copy_sounds():
     assets_path = os.path.join(JAVA_RP_DIR, 'assets')
     sounds_dst = os.path.join(BEDROCK_RP_DIR, 'sounds', 'custom')
@@ -325,6 +346,7 @@ def copy_sounds():
                             shutil.copy2(os.path.join(root, file), dest_path)
 
                             # Détection automatique de "stream" pour les musiques longues
+                            # Automatic "stream" detection for long music
                             stream = "records" in rel_path or "special" in rel_path
 
                             sound_definitions[sound_id] = {
@@ -492,6 +514,7 @@ def extract_custom_model_data():
 
 def list_java_assets():
     # Affiche la structure du dossier assets Java pour debug
+    # Shows the Java assets folder structure for debugging
     print("🔍 Structure du pack Java assets :")
     for root, dirs, files in os.walk(os.path.join(JAVA_RP_DIR, 'assets')):
         level = root.replace(JAVA_RP_DIR, '').count(os.sep)
@@ -553,7 +576,8 @@ def generate_behavior_pack(items):
     }
     with open(os.path.join(bp_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=4)
-
+        
+    # Generate each item file
     # Générer chaque fichier item
     for item in items:
         item_json = {
@@ -597,14 +621,16 @@ def generate_geyser_mapping_json(items):
         cmd = str(item['custom_model_data'])
 
         # Créer la structure si absente
+        # Create structure if absent
         if base_item not in mappings["items"]:
             mappings["items"][base_item] = {
                 "custom_model_data": {}
             }
 
         # Ajouter le mapping pour ce CustomModelData
+        # Add the mapping for this CustomModelData
         mappings["items"][base_item]["custom_model_data"][cmd] = {
-            "bedrock_identifier": base_item,  # Peut être adapté si nécessaire
+            "bedrock_identifier": base_item,  # Peut être adapté si nécessaire / # Can be adapted if necessary
             "display_name": item.get("display_name", "")
         }
 
