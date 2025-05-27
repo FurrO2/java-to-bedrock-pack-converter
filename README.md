@@ -55,15 +55,15 @@ render_controllers/
 
 # Windows example
 
-set `JAVA_RP_DIR=C:\path\to\your\java\pack`
+set `JAVA_RP_DIR=C:\\path\\to\\your\\java\\pack`
 
-set `BEDROCK_RP_DIR=C:\path\to\output\bedrock\pack
+set `BEDROCK_RP_DIR=C:\\path\to\\output\\bedrock\\pack
 `
 
 Or modify the script directly:
 
-JAVA_RP_DIR = `r"C:\path\to\your\java\pack"`
-BEDROCK_RP_DIR = `r"C:\path\to\output\bedrock\pack"`
+JAVA_RP_DIR = `r"C:\\path\\to\\your\\java\\pack"`
+BEDROCK_RP_DIR = `r"C:\\path\\to\\output\\bedrock\\pack"`
 
 🧪 Usage
 Place your Java resource pack in the defined JAVA_RP_DIR
