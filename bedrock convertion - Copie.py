@@ -11,8 +11,8 @@ except ImportError:
     raise
 
 # Charger les chemins depuis les variables d'environnement
-JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"C:\\Users\\frank\\Desktop\\converter\\java\\§6Aive is real ! - 1.21.4 version")
-BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"C:\\Users\\frank\\Desktop\\converter\\bedrock\\§6Aive is real ! - 1.21.4 version")
+JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\java\\name_of_your_pack")
+BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\bedrock\\name_of_your_pack")
 CUSTOM_ITEMS_FILE = "custom_items.json"
 CUSTOM_NAMESPACE = "custom_stuff_v1"
 
