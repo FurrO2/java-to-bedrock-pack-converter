@@ -4,6 +4,9 @@ import json
 import uuid
 from collections import defaultdict
 
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+
 try:
     import yaml
 except ImportError:
@@ -11,18 +14,18 @@ except ImportError:
     raise
 
 # Charger les chemins depuis les variables d'environnement
-# Load paths from environment variables
-
-JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\java\\name_of_your_pack")
-BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"C:\\Users\\User_name\\Desktop\\converter\\bedrock\\name_of_your_pack")
+JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"Put the path to your Java Resource Pack here")
+if not JAVA_RP_DIR.endswith(os.sep):
+    JAVA_RP_DIR += os.sep
+BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"Put the path to your Bedrock Resource Pack here")
+if not BEDROCK_RP_DIR.endswith(os.sep):
+    BEDROCK_RP_DIR += os.sep
 CUSTOM_ITEMS_FILE = "custom_items.json"
-CUSTOM_NAMESPACE = "custom_stuff_v1"
 
 if not JAVA_RP_DIR or not BEDROCK_RP_DIR:
     raise EnvironmentError("❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.")
 
 # Structure minimale
-# Minimal structure
 bedrock_structure = [
     "textures",
     "textures/item",
@@ -40,7 +43,7 @@ def clean_bedrock_directory():
         target = JAVA_RP_DIR.replace('java', sub)
         if os.path.exists(target):
             shutil.rmtree(target)
-            print(f"🪟 Dossier supprimé : {target}")
+            print(t("deleted_folder", target=target))
 
 def create_bedrock_structure():
     os.makedirs(BEDROCK_RP_DIR, exist_ok=True)
@@ -54,11 +57,17 @@ def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, sou
     threshold = entry.get('threshold', 0)
 
     rel = model_ref.split(':', 1)[-1] if ':' in model_ref else model_ref
+    # Recherche tous les dossiers de namespace dans assets pour trouver le modèle
+    assets_root = os.path.join(JAVA_RP_DIR, 'assets')
     possible_paths = [
-        os.path.join(JAVA_RP_DIR, 'assets', *rel.split('/')) + '.json',
-        os.path.join(JAVA_RP_DIR, 'assets', CUSTOM_NAMESPACE, 'models', *rel.split('/')) + '.json',
-        os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'models', *rel.split('/')) + '.json'
+        os.path.join(assets_root, *rel.split('/')) + '.json'
     ]
+    # Ajoute tous les namespaces trouvés dans assets
+    if os.path.isdir(assets_root):
+        for ns in os.listdir(assets_root):
+            ns_model = os.path.join(assets_root, ns, 'models', *rel.split('/')) + '.json'
+            possible_paths.append(ns_model)
+    possible_paths.append(os.path.join(assets_root, 'minecraft', 'models', *rel.split('/')) + '.json')
 
     model_path = next((p for p in possible_paths if os.path.isfile(p)), None)
 
@@ -99,7 +108,7 @@ def copy_all_item_textures():
             if os.path.isdir(textures_root):
                 dst_root = os.path.join(BEDROCK_RP_DIR, 'textures')
                 shutil.copytree(textures_root, dst_root, dirs_exist_ok=True)
-    print("📁 Toutes les textures item copiées.")
+    print(t("all_textures_copied"))
 
 def convert_java_model_to_geo(model_path, output_name, texture_key):
     try:
@@ -118,121 +127,144 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         groups = model.get('groups', [])
         print(f"➡️  {len(elements)} éléments, {len(groups)} groupes")
 
-        def correct_uv_mapping(face, uv_data):
-            """Corrige le mapping UV selon les standards Bedrock"""
-            if "uv" not in uv_data or len(uv_data['uv']) != 4:
-                return {"uv": [0, 0], "uv_size": [1, 1]}
-            
-            u0, v0, u1, v1 = uv_data['uv']
-            
-            if face == "up":
-                # CORRECTION: Pour la face du haut - mapping standard
-                # FIX: For the top face - standard mapping
-                return {
-                    "uv": [round(u0, 5), round(v0, 5)],
-                    "uv_size": [round(u1 - u0, 5), round(v1 - v0, 5)]
-                }
-            elif face == "down":
-                # Pour la face du bas : inversion U et taille V négative
-                # For the bottom face: U inversion and negative V size
-                return {
-                    "uv": [round(u1, 5), round(v1, 5)],
-                    "uv_size": [round(u0 - u1, 5), round(v0 - v1, 5)]
-                }
-            else:
-                # Faces latérales : mapping standard
-                # Side faces: standard mapping
-                return {
-                    "uv": [round(u0, 5), round(v0, 5)],
-                    "uv_size": [round(u1 - u0, 5), round(v1 - v0, 5)]
-                }
-
         def calculate_pivot_from_origin(origin):
-            """Calcule le pivot Bedrock à partir de l'origine Java"""
-            # CORRECTION: Conversion standard Java -> Bedrock : X-8, Y inchangé, Z-8
-            # FIX: Java -> Bedrock standard conversion: X-8, Y unchanged, Z-8
+            # Correction: X-8, Y inchangé, Z-8
             return [
                 round(origin[0] - 8, 5),
                 round(origin[1], 5),
                 round(origin[2] - 8, 5)
             ]
 
-        def build_bone(group, parent_name=None):
-            name = group['name'].replace(' ', '').lower()
-
-            # Calcul du pivot selon l'origine du groupe
-            # Calculation of the pivot according to the origin of the group
-            if 'origin' in group and len(group['origin']) == 3:
-                bone_pivot = calculate_pivot_from_origin(group['origin'])
+        def correct_uv_mapping(face, uv_data):
+            if "uv" not in uv_data or len(uv_data['uv']) != 4:
+                return {"uv": [0, 0], "uv_size": [1, 1]}
+            u0, v0, u1, v1 = uv_data['uv']
+            # Ajout de compensation de bordure (0.016) comme dans le script sh
+            x_sign = 1 if (u1 - u0) > 0 else -1
+            y_sign = 1 if (v1 - v0) > 0 else -1
+            
+            if face in ["up", "down"]:
+                return {
+                    "uv": [round(u1 - (0.016 * x_sign), 5), round(v1 - (0.016 * y_sign), 5)],
+                    "uv_size": [round((u0 - u1) + (0.016 * x_sign), 5), round((v0 - v1) + (0.016 * y_sign), 5)]
+                }
             else:
-                print(f"❗ Pivot manquant pour le groupe: {group.get('name', 'inconnu')}, pivot forcé [0,0,0]")
-                bone_pivot = [0, 0, 0]
+                return {
+                    "uv": [round(u0 + (0.016 * x_sign), 5), round(v0 + (0.016 * y_sign), 5)],
+                    "uv_size": [round((u1 - u0) - (0.016 * x_sign), 5), round((v1 - v0) - (0.016 * y_sign), 5)]
+                }
 
-            cubes = []
-            children_names = []
-            sub_bones = []
+        def build_bone(group, parent_name=None):
+            try:
+                name = group.get('name', 'unnamed').replace(' ', '').lower()
+                
+                # Structure de base comme dans le script sh
+                bones = [{
+                    "name": "geyser_custom",
+                    "binding": "c.item_slot == 'head' ? 'head' : q.item_slot_to_bone_name(c.item_slot)",
+                    "pivot": [0, 8, 0]
+                }, {
+                    "name": "geyser_custom_x",
+                    "parent": "geyser_custom",
+                    "pivot": [0, 8, 0]
+                }, {
+                    "name": "geyser_custom_y",
+                    "parent": "geyser_custom_x",
+                    "pivot": [0, 8, 0]
+                }, {
+                    "name": "geyser_custom_z",
+                    "parent": "geyser_custom_y",
+                    "pivot": [0, 8, 0]
+                }]
 
-            # Traitement des enfants du groupe
-            # Treatment of children in the group
-            for child in group.get('children', []):
-                if isinstance(child, int):
-                    # Enfant = élément géométrique
-                    # Child = geometric element
-                    e = elements[child]
-                    
-                    # Conversion des coordonnées Java vers Bedrock
-                    # Converting coordinates from Java to Bedrock
-                    cube_origin = [
-                        round(e['from'][0] - 8, 5),
-                        round(e['from'][1], 5),
-                        round(e['from'][2] - 8, 5)
-                    ]
-                    size = [round(e['to'][i] - e['from'][i], 5) for i in range(3)]
+                cubes = []
+                children_names = []
+                sub_bones = []
 
-                    cube = {
-                        "origin": cube_origin,
-                        "size": size,
-                        "uv": {}
-                    }
+                # Traitement des enfants
+                for child in group.get('children', []):
+                    if isinstance(child, int) and child < len(elements):
+                        # Élément géométrique
+                        e = elements[child]
+                        
+                        # Gestion de la rotation
+                        rotation = [0, 0, 0]
+                        if 'rotation' in e:
+                            if isinstance(e['rotation'], dict):
+                                rotation = e['rotation'].get('angle', 0)
+                                # Conversion angle unique vers [x, y, z]
+                                if isinstance(rotation, (int, float)):
+                                    axis = e['rotation'].get('axis', 'y')
+                                    rotation = [
+                                        rotation if axis == 'x' else 0,
+                                        rotation if axis == 'y' else 0,
+                                        rotation if axis == 'z' else 0
+                                    ]
+                            elif isinstance(e['rotation'], (list, tuple)):
+                                rotation = e['rotation']
 
-                    # Mapping UV corrigé pour chaque face
-                    # Corrected UV mapping for each face
-                    for face, data in e.get('faces', {}).items():
-                        cube['uv'][face] = correct_uv_mapping(face, data)
+                        # Conversion des coordonnées avec gestion de la rotation
+                        from_pos = e.get('from', [0, 0, 0])
+                        to_pos = e.get('to', [0, 0, 0])
+                        
+                        cube_origin = [
+                            round(from_pos[0] - 8, 5),
+                            round(from_pos[1], 5),
+                            round(from_pos[2] - 8, 5)
+                        ]
+                        
+                        size = [
+                            round(to_pos[i] - from_pos[i], 5) 
+                            for i in range(3)
+                        ]
 
-                    cubes.append(cube)
+                        cube = {
+                            "origin": cube_origin,
+                            "size": size,
+                            "uv": {}
+                        }
 
-                elif isinstance(child, dict):
-                    # Enfant = sous-groupe (bone enfant)
-                    # Child = subgroup (child bone)
-                    nested_bones = build_bone(child, parent_name=name)
-                    sub_bones.extend(nested_bones)
-                    children_names.append(nested_bones[0]['name'])
+                        # Ajout de la rotation si présente
+                        if any(r != 0 for r in rotation):
+                            cube["rotation"] = rotation
 
-            # Construction de l'os
-            # Bone construction
-            bone = {
-                "name": name,
-                "pivot": bone_pivot
-            }
-            
-            # Ajout des cubes s'il y en a
-            # Adding cubes if there are any
-            if cubes:
-                bone["cubes"] = cubes
-            
-            # CORRECTION: Hiérarchie parent-enfant correcte
-            # FIX: Correct parent-child hierarchy
-            if parent_name:
-                bone["parent"] = parent_name
-            if children_names:
-                bone['children'] = children_names
+                        # UV mapping avec gestion des faces manquantes
+                        for face, data in e.get('faces', {}).items():
+                            if data:  # Vérifie que les données UV existent
+                                cube['uv'][face] = correct_uv_mapping(face, data)
 
-            print(f"✅ Bone finalisé: {name} avec {len(cubes)} cubes, parent={parent_name}")
-            return [bone] + sub_bones
+                        cubes.append(cube)
+
+                    elif isinstance(child, dict):
+                        # Sous-groupe
+                        nested_bones = build_bone(child, name)
+                        if nested_bones:
+                            sub_bones.extend(nested_bones)
+                            children_names.append(nested_bones[0]['name'])
+
+                # Définir le pivot du bone à partir de l'origine du groupe ou par défaut [0, 8, 0]
+                bone_pivot = calculate_pivot_from_origin(group.get('origin', [8, 8, 8])) if 'origin' in group else [0, 8, 0]
+                # Construction du bone
+                bone = {
+                    "name": name,
+                    "pivot": bone_pivot
+                }
+                
+                # Ajout des propriétés si présentes
+                if cubes:
+                    bone["cubes"] = cubes
+                if parent_name:
+                    bone["parent"] = parent_name
+                if children_names:
+                    bone["children"] = children_names
+
+                return [bone] + sub_bones
+
+            except Exception as e:
+                print(f"⚠️ Erreur dans build_bone pour {group.get('name', 'unnamed')}: {e}")
+                return []
 
         # Construction de tous les os à partir des groupes
-        # Construction of all bones from groups
         bones = []
         for group in groups:
             if not isinstance(group, dict):
@@ -246,7 +278,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 print(f"❌ Erreur lors du traitement du groupe '{group.get('name', 'inconnu')}': {e}")
 
         # Construction des transformations d'affichage
-        # Building display transformations
+        # Display transforms building (EN)
         item_display_transforms = {}
         if "display" in model:
             for key, data in model["display"].items():
@@ -262,7 +294,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 item_display_transforms[key.lower()] = entry
 
         # Assemblage final du fichier géométrique
-        # Final assembly of the geometric file
+        # Final geometry file assembly (EN)
         geo = {
             "format_version": "1.12.0",
             "minecraft:geometry": [
@@ -282,14 +314,14 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         }
 
         # Écriture du fichier .geo.json
-        # Writing the .geo.json file
+        # Writing .geo.json file (EN)
         out_geo = os.path.join(BEDROCK_RP_DIR, 'models', 'entity', f'{output_name}.geo.json')
         print(f"💾 Écriture du fichier GEO : {out_geo}")
         with open(out_geo, 'w', encoding='utf-8') as f:
             json.dump(geo, f, indent='\t', separators=(',', ': '))
 
         # Génération du render controller
-        # Generating the render controller
+        # Render controller generation (EN)
         fixed_tex_key = texture_key.replace('\\', '/').split('.')[0]
         rc = {
             "format_version": "1.8.0",
@@ -325,7 +357,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
 
 
 
-### Sounds don't seem to be converted, i think geyser don't allow that part
+
 def copy_sounds():
     assets_path = os.path.join(JAVA_RP_DIR, 'assets')
     sounds_dst = os.path.join(BEDROCK_RP_DIR, 'sounds', 'custom')
@@ -346,7 +378,6 @@ def copy_sounds():
                             shutil.copy2(os.path.join(root, file), dest_path)
 
                             # Détection automatique de "stream" pour les musiques longues
-                            # Automatic "stream" detection for long music
                             stream = "records" in rel_path or "special" in rel_path
 
                             sound_definitions[sound_id] = {
@@ -367,9 +398,9 @@ def copy_sounds():
                 "format_version": "1.14.0",
                 "sound_definitions": sound_definitions
             }, f, indent=4)
-        print("🔊 Sons copiés + sound_definitions.json généré.")
+        print(t("sounds_copied"))
     else:
-        print("🔇 Aucun son trouvé à copier.")
+        print(t("no_sounds"))
 
 def generate_manifest():
     description = "Converted Resource Pack"
@@ -403,10 +434,10 @@ def generate_manifest():
     }
     with open(os.path.join(BEDROCK_RP_DIR, "manifest.json"), 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=4)
-    print("📝 Manifest généré.")
+    print(t("manifest_generated"))
 
 def validate_geo_json_files(directory):
-    print("🔍 Validation des fichiers .geo.json...")
+    print(t("geo_validation"))
     count = 0
     for root, _, files in os.walk(directory):
         for f in files:
@@ -417,7 +448,7 @@ def validate_geo_json_files(directory):
                     count += 1
                 except Exception as e:
                     print(f"❌ Erreur fichier invalide : {f} => {e}")
-    print(f"✅ Validation terminée ({count} fichiers .geo.json valides)")
+    print(t("geo_validation_done", count=count))
 
 # --- Custom Items extraction ---
 def normalize_item_name(name):
@@ -490,13 +521,17 @@ def generate_custom_items_json(items):
     output_path = os.path.join(BEDROCK_RP_DIR, "custom_items.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(custom_items, f, indent=4)
-    print("✅ custom_items.json généré")
+    print(t("custom_items_generated"))
 
 def extract_custom_model_data():
-    items,cmd_map=[],{}
-    items_dir=os.path.join(JAVA_RP_DIR,'assets','minecraft','items')
-    tex_root=os.path.join(BEDROCK_RP_DIR,'textures','item')
-    if not os.path.isdir(items_dir): print(f"❌ Introuvable: {items_dir}"); return items
+    items, cmd_map = [], {}
+    # Correction du chemin pour être compatible avec tous les OS et éviter les slashs/doubles-slashs
+    items_dir = os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'items')
+    items_dir = os.path.normpath(items_dir)
+    tex_root = os.path.join(BEDROCK_RP_DIR, 'textures', 'item')
+    if not os.path.isdir(items_dir):
+        print(f"❌ Introuvable: {items_dir}")
+        return items
     for r,_,fs in os.walk(items_dir):
         for f in fs:
             if not f.lower().endswith(('.json','.yml','.yaml')): continue
@@ -514,7 +549,6 @@ def extract_custom_model_data():
 
 def list_java_assets():
     # Affiche la structure du dossier assets Java pour debug
-    # Shows the Java assets folder structure for debugging
     print("🔍 Structure du pack Java assets :")
     for root, dirs, files in os.walk(os.path.join(JAVA_RP_DIR, 'assets')):
         level = root.replace(JAVA_RP_DIR, '').count(os.sep)
@@ -546,7 +580,7 @@ def generate_item_texture_json(items):
     out_path = os.path.join(BEDROCK_RP_DIR, "textures", "item_texture.json")
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(item_texture, f, indent=4)
-    print("✅ item_texture.json généré")
+    print(t("item_texture_generated"))
 
 def generate_behavior_pack(items):
     bp_dir = BEDROCK_RP_DIR.replace('bedrock', 'behavior')
@@ -555,6 +589,7 @@ def generate_behavior_pack(items):
     os.makedirs(os.path.join(bp_dir, 'items'), exist_ok=True)
 
     # Manifest for behavior pack
+    # Manifest du behavior pack (FR)
     header_uuid = str(uuid.uuid4())
     module_uuid = str(uuid.uuid4())
     manifest = {
@@ -576,9 +611,9 @@ def generate_behavior_pack(items):
     }
     with open(os.path.join(bp_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=4)
-        
-    # Generate each item file
+
     # Générer chaque fichier item
+    # Generate each item file (EN)
     for item in items:
         item_json = {
             "format_version": "1.16.100",
@@ -621,16 +656,16 @@ def generate_geyser_mapping_json(items):
         cmd = str(item['custom_model_data'])
 
         # Créer la structure si absente
-        # Create structure if absent
+        # Create structure if missing (EN)
         if base_item not in mappings["items"]:
             mappings["items"][base_item] = {
                 "custom_model_data": {}
             }
 
         # Ajouter le mapping pour ce CustomModelData
-        # Add the mapping for this CustomModelData
+        # Add mapping for this CustomModelData (EN)
         mappings["items"][base_item]["custom_model_data"][cmd] = {
-            "bedrock_identifier": base_item,  # Peut être adapté si nécessaire / # Can be adapted if necessary
+            "bedrock_identifier": base_item,  # Peut être adapté si nécessaire
             "display_name": item.get("display_name", "")
         }
 
@@ -638,7 +673,7 @@ def generate_geyser_mapping_json(items):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(mappings, f, indent=4)
-    print("✅ Fichier geyser-mapping.json généré correctement.")
+    print(t("geyser_mapping_generated"))
 
 
 def create_mcpack(source_dir, output_dir, pack_name):
@@ -663,10 +698,10 @@ def create_mcpack(source_dir, output_dir, pack_name):
     os.rename(zip_path, mcpack_path)
     shutil.rmtree(temp_dir)
 
-    print(f"✅ Fichier .mcpack créé : {mcpack_path}")
+    print(t("mcpack_created", mcpack_path=mcpack_path))
 
 def validate_consistency(items):
-    print("🔎 Validation de cohérence entre les fichiers...")
+    print(t("coherence_validation"))
     rc_path = os.path.join(BEDROCK_RP_DIR, "render_controllers")
     geo_path = os.path.join(BEDROCK_RP_DIR, "models", "entity")
     tex_path = os.path.join(BEDROCK_RP_DIR, "textures", "item")
@@ -682,11 +717,11 @@ def validate_consistency(items):
         rc_file = os.path.join(rc_path, f"{name}.render_controller.json")
 
         if not os.path.isfile(geo_file):
-            print(f"❌ GEO manquant : {name}.geo.json")
+            print(t("missing_geo", name=name))
             errors += 1
 
         if not os.path.isfile(rc_file):
-            print(f"❌ Render controller manquant : {name}.render_controller.json")
+            print(t("missing_rc", name=name))
             errors += 1
             continue
 
@@ -696,48 +731,314 @@ def validate_consistency(items):
             expected_geometry = f"geometry.{name}"
             actual_geometry = rc["render_controllers"][f"controller.render.{name}"]["geometry"]
             if actual_geometry != expected_geometry:
-                print(f"⚠️ Mauvais identifiant de géométrie : {actual_geometry} (attendu: {expected_geometry})")
+                print(t("bad_geometry", actual=actual_geometry, expected=expected_geometry))
                 errors += 1
 
             tex_array = rc.get("arrays", {}).get("textures", {}).get(f"Array.textures.{name}", [])
             if not tex_array or not os.path.isfile(os.path.join(BEDROCK_RP_DIR, tex_array[0] + ".png")):
-                print(f"⚠️ Texture introuvable ou incorrecte pour {name}: {tex_array}")
+                print(t("missing_texture", expected_texture=os.path.join(BEDROCK_RP_DIR, tex_array[0] + ".png") if tex_array else ""))
                 errors += 1
         except Exception as e:
             print(f"❌ Erreur lecture {name}.render_controller.json: {e}")
             errors += 1
 
         if not os.path.isfile(expected_texture):
-            print(f"❌ Fichier texture manquant : {expected_texture}")
+            print(t("missing_texture", expected_texture=expected_texture))
             errors += 1
 
-    print(f"✅ Validation cohérence terminée ({len(items) - errors} valides / {len(items)} total)")
+    print(t("coherence_validation_done", valid=len(items) - errors, total=len(items)))
 
 def copy_pack_icon():
     src = os.path.join(JAVA_RP_DIR, "pack.png")
     dst = os.path.join(BEDROCK_RP_DIR, "pack_icon.png")
     if os.path.isfile(src):
         shutil.copy(src, dst)
-        print("🖼️ pack_icon.png copié depuis pack.png")
+        print(t("pack_icon_copied"))
     else:
-        print("⚠️ Aucun pack.png trouvé à copier.")
+        print(t("no_pack_icon"))
 
-if __name__ == '__main__':
-    print("⏳ Démarrage conversion...")
-    clean_bedrock_directory()
-    create_bedrock_structure()
-    copy_all_item_textures()
-    copy_sounds()
-    copy_pack_icon()
-    generate_manifest()
-    items = extract_custom_model_data()
-    generate_custom_items_json(items)
-    generate_item_texture_json(items)
-    generate_geyser_mapping_json(items)
-    validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity"))
-    validate_consistency(items)
-    final_output_dir = os.path.join(os.path.dirname(BEDROCK_RP_DIR), 'final_output')
-    os.makedirs(final_output_dir, exist_ok=True)
-    converted_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
-    create_mcpack(BEDROCK_RP_DIR, final_output_dir, converted_name)
-    print("✅ Conversion terminée.")
+
+TRANSLATIONS = {
+    "fr": {
+        "select_java_dir": "Dossier Resource Pack Java:",
+        "select_bedrock_dir": "Dossier Resource Pack Bedrock:",
+        "browse": "Parcourir",
+        "start_conversion": "Lancer la conversion",
+        "logs": "Logs:",
+        "conversion_done": "✅ Conversion terminée.",
+        "conversion_success": "Conversion terminée avec succès !",
+        "conversion_error": "Erreur lors de la conversion : {e}",
+        "error": "❌ Erreur : {e}",
+        "choose_language": "Langue",
+        "success": "Succès",
+        "error_title": "Erreur",
+        "start_console": "⏳ Démarrage conversion (mode console)...",
+        "console_done": "✅ Conversion terminée.",
+        "no_java_dir": "❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.",
+        "deleted_folder": "🪟 Dossier supprimé : {target}",
+        "all_textures_copied": "📁 Toutes les textures item copiées.",
+        "sounds_copied": "🔊 Sons copiés + sound_definitions.json généré.",
+        "no_sounds": "🔇 Aucun son trouvé à copier.",
+        "manifest_generated": "📝 Manifest généré.",
+        "geo_validation": "🔍 Validation des fichiers .geo.json...",
+        "geo_validation_done": "✅ Validation terminée ({count} fichiers .geo.json valides)",
+        "custom_items_generated": "✅ custom_items.json généré",
+        "item_texture_generated": "✅ item_texture.json généré",
+        "geyser_mapping_generated": "✅ Fichier geyser-mapping.json généré correctement.",
+        "mcpack_created": "✅ Fichier .mcpack créé : {mcpack_path}",
+        "coherence_validation": "🔎 Validation de cohérence entre les fichiers...",
+        "coherence_validation_done": "✅ Validation cohérence terminée ({valid} valides / {total} total)",
+        "missing_geo": "❌ GEO manquant : {name}.geo.json",
+        "missing_rc": "❌ Render controller manquant : {name}.render_controller.json",
+        "bad_geometry": "⚠️ Mauvais identifiant de géométrie : {actual} (attendu: {expected})",
+        "missing_texture": "❌ Fichier texture manquant : {expected_texture}",
+        "pack_icon_copied": "🖼️ pack_icon.png copié depuis pack.png",
+        "no_pack_icon": "⚠️ Aucun pack.png trouvé à copier.",
+    },
+    "en": {
+        "select_java_dir": "Java Resource Pack Folder:",
+        "select_bedrock_dir": "Bedrock Resource Pack Folder:",
+        "browse": "Browse",
+        "start_conversion": "Start Conversion",
+        "logs": "Logs:",
+        "conversion_done": "✅ Conversion finished.",
+        "conversion_success": "Conversion finished successfully!",
+        "conversion_error": "Error during conversion: {e}",
+        "error": "❌ Error: {e}",
+        "choose_language": "Language",
+        "success": "Success",
+        "error_title": "Error",
+        "start_console": "⏳ Starting conversion (console mode)...",
+        "console_done": "✅ Conversion finished.",
+        "no_java_dir": "❌ JAVA_RP_DIR or BEDROCK_RP_DIR not set. Check your environment variables.",
+        "deleted_folder": "🪟 Deleted folder: {target}",
+        "all_textures_copied": "📁 All item textures copied.",
+        "sounds_copied": "🔊 Sounds copied + sound_definitions.json generated.",
+        "no_sounds": "🔇 No sounds found to copy.",
+        "manifest_generated": "📝 Manifest generated.",
+        "geo_validation": "🔍 Validating .geo.json files...",
+        "geo_validation_done": "✅ Validation done ({count} valid .geo.json files)",
+        "custom_items_generated": "✅ custom_items.json generated",
+        "item_texture_generated": "✅ item_texture.json generated",
+        "geyser_mapping_generated": "✅ geyser-mapping.json generated successfully.",
+        "mcpack_created": "✅ .mcpack file created: {mcpack_path}",
+        "coherence_validation": "🔎 Checking file consistency...",
+        "coherence_validation_done": "✅ Consistency check done ({valid} valid / {total} total)",
+        "missing_geo": "❌ Missing GEO: {name}.geo.json",
+        "missing_rc": "❌ Missing render controller: {name}.render_controller.json",
+        "bad_geometry": "⚠️ Wrong geometry identifier: {actual} (expected: {expected})",
+        "missing_texture": "❌ Missing texture file: {expected_texture}",
+        "pack_icon_copied": "🖼️ pack_icon.png copied from pack.png",
+        "no_pack_icon": "⚠️ No pack.png found to copy.",
+    }
+}
+
+LANG = "fr"
+
+def t(key, **kwargs):
+    return TRANSLATIONS[LANG].get(key, key).format(**kwargs)
+
+class PackConverterGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("PackConverter Java ➔ Bedrock")
+        self.root.geometry("650x400")
+        self.root.resizable(False, False)
+
+        # Langue
+        self.lang_var = tk.StringVar(value=LANG)
+        lang_frame = tk.Frame(root)
+        lang_frame.pack(anchor="ne", padx=10, pady=(10, 0))
+        self.lang_label = tk.Label(lang_frame, text=t("choose_language"), font=("Segoe UI", 10))
+        self.lang_label.pack(side="left")
+        self.lang_menu = tk.OptionMenu(lang_frame, self.lang_var, *TRANSLATIONS.keys(), command=self.change_language)
+        self.lang_menu.pack(side="left")
+
+        # Variables
+        self.java_dir = tk.StringVar(value=JAVA_RP_DIR)
+
+        # Modern Card-like Frame
+        self.main_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
+        self.main_card.pack(fill="x", padx=20, pady=(20, 5))
+
+        # Java RP selection
+        self.java_frame = tk.Frame(self.main_card, bg="#f4f4f4")
+        self.java_frame.pack(fill="x", pady=10, padx=10)
+        self.java_label = tk.Label(self.java_frame, text=t("select_java_dir"), font=("Segoe UI", 11), bg="#f4f4f4")
+        self.java_label.pack(side="left")
+        self.java_entry = tk.Entry(self.java_frame, textvariable=self.java_dir, width=40, font=("Segoe UI", 10))
+        self.java_entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        self.java_browse_btn = tk.Button(self.java_frame, text=t("browse"), command=self.browse_java, font=("Segoe UI", 10), bg="#e0e0e0")
+        self.java_browse_btn.pack(side="left", padx=10)
+
+        # Start conversion button
+        self.convert_btn = tk.Button(self.main_card, text=t("start_conversion"), command=self.run_conversion,
+                                     bg="#4CAF50", fg="white", font=("Segoe UI", 12, "bold"), height=2)
+        self.convert_btn.pack(fill="x", padx=10, pady=(10, 10))
+
+        # Logs section
+        self.logs_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
+        self.logs_card.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        self.logs_label = tk.Label(self.logs_card, text=t("logs"), font=("Segoe UI", 11, "bold"), bg="#f4f4f4")
+        self.logs_label.pack(anchor="w", padx=10, pady=(8, 0))
+        self.logbox = scrolledtext.ScrolledText(self.logs_card, height=10, state="disabled", font=("Consolas", 10), bg="#fafafa")
+        self.logbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Validation initiale des chemins
+        self.java_dir.trace_add("write", lambda *args: self.validate_paths())
+        self.validate_paths()
+
+    def validate_paths(self):
+        # Vérifie si le dossier Java RP contient des fichiers items valides
+        java_items_dir = os.path.normpath(os.path.join(self.java_dir.get(), 'assets', 'minecraft', 'items'))
+        has_items = os.path.isdir(java_items_dir) and any(
+            f.lower().endswith(('.json', '.yml', '.yaml'))
+            for f in os.listdir(java_items_dir)
+        ) if os.path.isdir(java_items_dir) else False
+
+        if has_items:
+            self.convert_btn.config(state="normal")
+        else:
+            self.convert_btn.config(state="disabled")
+
+    def browse_java(self):
+        path = filedialog.askdirectory(title="Sélectionne le dossier Java RP")
+        if path:
+            self.java_dir.set(path)
+
+    def browse_bedrock(self):
+        path = filedialog.askdirectory(title="Sélectionne le dossier Bedrock RP")
+        if path:
+            self.bedrock_dir.set(path)
+
+    def log(self, msg):
+        self.logbox.config(state="normal")
+        self.logbox.insert("end", msg + "\n")
+        self.logbox.see("end")
+        self.logbox.config(state="disabled")
+        self.root.update()
+
+    def run_conversion(self):
+        import sys
+        import io
+
+        # Redirige stdout/stderr vers la logbox
+        class TextRedirector(io.StringIO):
+            def __init__(self, gui):
+                super().__init__()
+                self.gui = gui
+            def write(self, s):
+                self.gui.log(s.rstrip())
+            def flush(self): pass
+
+        sys.stdout = TextRedirector(self)
+        sys.stderr = TextRedirector(self)
+
+        try:
+            # Met à jour les variables globales
+            global JAVA_RP_DIR, BEDROCK_RP_DIR
+            JAVA_RP_DIR = self.java_dir.get()
+            BEDROCK_RP_DIR = self.bedrock_dir.get()
+
+            # Lancement conversion
+            clean_bedrock_directory()
+            create_bedrock_structure()
+            copy_all_item_textures()
+            copy_sounds()
+            copy_pack_icon()
+            generate_manifest()
+            items = extract_custom_model_data()
+            generate_custom_items_json(items)
+            generate_item_texture_json(items)
+            generate_geyser_mapping_json(items)
+            validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity"))
+            validate_consistency(items)
+
+            # Sélection du dossier de sortie par l'utilisateur
+            output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie pour le ZIP")
+            if not output_dir:
+                self.log("❌ Opération annulée : aucun dossier de sortie sélectionné.")
+                return
+
+            converted_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
+            zip_path = os.path.join(output_dir, f"{converted_name}.zip")
+
+            # Création du fichier zip contenant tout le pack Bedrock
+            import zipfile
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
+                    for file in files:
+                        file_path = os.path.join(rootdir, file)
+                        arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
+                        zipf.write(file_path, arcname)
+
+            self.log(f"✅ Pack exporté dans : {zip_path}")
+            messagebox.showinfo(t("success"), f"Pack exporté dans :\n{zip_path}")
+        except Exception as e:
+            self.log(t("error", e=str(e)))
+            messagebox.showerror(t("error_title"), t("conversion_error", e=str(e)))
+
+    def update_labels(self):
+        # Met à jour tous les labels/boutons selon la langue
+        self.lang_label.config(text=t("choose_language"))
+        self.java_label.config(text=t("select_java_dir"))
+        self.java_browse_btn.config(text=t("browse"))
+        self.convert_btn.config(text=t("start_conversion"))
+        self.logs_label.config(text=t("logs"))
+        
+        # Reconstruction du menu
+        menu = self.lang_menu["menu"]
+        menu.delete(0, "end")
+        for lang in TRANSLATIONS.keys():
+            menu.add_command(label=lang, command=lambda l=lang: self.change_language(l))
+
+    def change_language(self, lang):
+        global LANG
+        LANG = lang
+        self.lang_var.set(lang)  # Important: mettre à jour la variable StringVar
+        self.update_labels()
+
+
+if __name__ == "__main__":
+    try:
+        import sys
+        if len(sys.argv) > 1 and sys.argv[1] == "--nogui":
+            # Mode console classique
+            print(t("start_console"))
+            clean_bedrock_directory()
+            create_bedrock_structure()
+            copy_all_item_textures()
+            copy_sounds()
+            copy_pack_icon()
+            generate_manifest()
+            items = extract_custom_model_data()
+            generate_custom_items_json(items)
+            generate_item_texture_json(items)
+            generate_geyser_mapping_json(items)
+            validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity"))
+            validate_consistency(items)
+            # Ajout : demande du dossier de sortie et création du zip
+            output_dir = input("Dossier de sortie pour le ZIP : ").strip()
+            if output_dir:
+                converted_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
+                zip_path = os.path.join(output_dir, f"{converted_name}.zip")
+                import zipfile
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
+                        for file in files:
+                            file_path = os.path.join(rootdir, file)
+                            arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
+                            zipf.write(file_path, arcname)
+                print(f"✅ Pack exporté dans : {zip_path}")
+            else:
+                print("❌ Opération annulée : aucun dossier de sortie sélectionné.")
+            print(t("console_done"))
+        else:
+            # Mode GUI
+            root = tk.Tk()
+            app = PackConverterGUI(root)
+            root.mainloop()
+            import sys
+            sys.exit(0)
+    except Exception as e:
+        print(t("error", e=str(e)))
