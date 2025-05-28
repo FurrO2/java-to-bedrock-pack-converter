@@ -3,6 +3,8 @@ import shutil
 import json
 import uuid
 from collections import defaultdict
+import tempfile
+import zipfile
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
@@ -15,8 +17,17 @@ except ImportError:
 
 # Charger les chemins depuis les variables d'environnement
 JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"Put the path to your Java Resource Pack here")
-if not JAVA_RP_DIR.endswith(os.sep):
-    JAVA_RP_DIR += os.sep
+TEMP_UNZIP_DIR = None
+
+if JAVA_RP_DIR.lower().endswith('.zip') and os.path.isfile(JAVA_RP_DIR):
+    TEMP_UNZIP_DIR = tempfile.mkdtemp(prefix="javarp_unzip_")
+    with zipfile.ZipFile(JAVA_RP_DIR, 'r') as zip_ref:
+        zip_ref.extractall(TEMP_UNZIP_DIR)
+    JAVA_RP_DIR = TEMP_UNZIP_DIR + os.sep
+else:
+    if not JAVA_RP_DIR.endswith(os.sep):
+        JAVA_RP_DIR += os.sep
+
 BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"Put the path to your Bedrock Resource Pack here")
 if not BEDROCK_RP_DIR.endswith(os.sep):
     BEDROCK_RP_DIR += os.sep
@@ -856,6 +867,7 @@ class PackConverterGUI:
 
         # Variables
         self.java_dir = tk.StringVar(value=JAVA_RP_DIR)
+        self.bedrock_dir = tk.StringVar(value="")  # Ajouté pour éviter l'erreur d'attribut
 
         # Modern Card-like Frame
         self.main_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
@@ -889,20 +901,38 @@ class PackConverterGUI:
         self.validate_paths()
 
     def validate_paths(self):
-        # Vérifie si le dossier Java RP contient des fichiers items valides
-        java_items_dir = os.path.normpath(os.path.join(self.java_dir.get(), 'assets', 'minecraft', 'items'))
-        has_items = os.path.isdir(java_items_dir) and any(
-            f.lower().endswith(('.json', '.yml', '.yaml'))
-            for f in os.listdir(java_items_dir)
-        ) if os.path.isdir(java_items_dir) else False
-
-        if has_items:
+        path = self.java_dir.get()
+        is_valid = False
+        if os.path.isdir(path):
+            java_items_dir = os.path.normpath(os.path.join(path, 'assets', 'minecraft', 'items'))
+            is_valid = os.path.isdir(java_items_dir) and any(
+                f.lower().endswith(('.json', '.yml', '.yaml'))
+                for f in os.listdir(java_items_dir)
+            ) if os.path.isdir(java_items_dir) else False
+        elif os.path.isfile(path) and path.lower().endswith('.zip'):
+            try:
+                with zipfile.ZipFile(path, 'r') as z:
+                    # Cherche au moins un fichier items dans le zip
+                    is_valid = any(
+                        name.lower().startswith('assets/minecraft/items/') and
+                        name.lower().endswith(('.json', '.yml', '.yaml'))
+                        for name in z.namelist()
+                    )
+            except Exception:
+                is_valid = False
+        if is_valid:
             self.convert_btn.config(state="normal")
         else:
             self.convert_btn.config(state="disabled")
 
     def browse_java(self):
-        path = filedialog.askdirectory(title="Sélectionne le dossier Java RP")
+        path = filedialog.askopenfilename(
+            title="Sélectionne le dossier ou le fichier ZIP du Java RP",
+            filetypes=[("Dossier ou ZIP", "*.zip"), ("Tous les fichiers", "*.*")]
+        )
+        if not path:
+            # Si rien n'est sélectionné, proposer un dossier
+            path = filedialog.askdirectory(title="Sélectionne le dossier Java RP")
         if path:
             self.java_dir.set(path)
 
@@ -921,6 +951,8 @@ class PackConverterGUI:
     def run_conversion(self):
         import sys
         import io
+        import tempfile
+        import zipfile
 
         # Redirige stdout/stderr vers la logbox
         class TextRedirector(io.StringIO):
@@ -938,7 +970,20 @@ class PackConverterGUI:
             # Met à jour les variables globales
             global JAVA_RP_DIR, BEDROCK_RP_DIR
             JAVA_RP_DIR = self.java_dir.get()
-            BEDROCK_RP_DIR = self.bedrock_dir.get()
+            bedrock_dir_value = self.bedrock_dir.get()
+            if not bedrock_dir_value:
+                bedrock_dir_value = tempfile.mkdtemp(prefix="bedrock_rp_")
+            BEDROCK_RP_DIR = bedrock_dir_value
+            if not BEDROCK_RP_DIR.endswith(os.sep):
+                BEDROCK_RP_DIR += os.sep
+
+            # Ajout : décompression du zip si besoin
+            temp_unzip_dir = None
+            if JAVA_RP_DIR.lower().endswith('.zip') and os.path.isfile(JAVA_RP_DIR):
+                temp_unzip_dir = tempfile.mkdtemp(prefix="javarp_unzip_")
+                with zipfile.ZipFile(JAVA_RP_DIR, 'r') as zip_ref:
+                    zip_ref.extractall(temp_unzip_dir)
+                JAVA_RP_DIR = temp_unzip_dir + os.sep
 
             # Lancement conversion
             clean_bedrock_directory()
@@ -960,8 +1005,15 @@ class PackConverterGUI:
                 self.log("❌ Opération annulée : aucun dossier de sortie sélectionné.")
                 return
 
-            converted_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
-            zip_path = os.path.join(output_dir, f"{converted_name}.zip")
+            # --- Détermination du nom du fichier exporté ---
+            java_input_path = self.java_dir.get()
+            if java_input_path.lower().endswith('.zip'):
+                base_name = os.path.splitext(os.path.basename(java_input_path))[0]
+            else:
+                base_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
+            export_name = f"{base_name}[BConverted].zip"
+            zip_path = os.path.join(output_dir, export_name)
+            # --- Fin nom fichier ---
 
             # Création du fichier zip contenant tout le pack Bedrock
             import zipfile
