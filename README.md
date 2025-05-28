@@ -56,14 +56,15 @@ entity/
 render_controllers/
 `
 
-##🧪 Usage
+## 🧪 Usage
 
 Run the script:`
 PackConverter_JavaToBedrock.py
 `
 
+Choose your language (Fr is the default language, En is also available)
 
-Place your Java resource pack folder into the GUI/Panem directory. (Do not use a zip file.)
+Locate your Java resource pack folder with the GUI/Panel directory. (Do not use a zip file.)
 
 Click the Start Conversion button.
 
