@@ -10,7 +10,7 @@ This script automates the conversion of a Minecraft Java Edition resource pack t
 ---
 
 
-## ❗⛔ FOR NOW, THE MODEL CONVERTER ISN'T WORKING WELL, so this need to be fixed ⛔❗
+## ❗⛔FOR NOW, THE MODEL CONVERTER ISN'T WORKING WELL, so this need to be fixed⛔❗
 
 
 ## 📦 Features
@@ -56,27 +56,17 @@ entity/
 render_controllers/
 `
 
-⚙️ Configuration
-
-# Windows example
-
-set `JAVA_RP_DIR=C:\\path\\to\\your\\java\\pack`
-
-set `BEDROCK_RP_DIR=C:\\path\to\\output\\bedrock\\pack
-`
-
-Or modify the script directly:
-
-JAVA_RP_DIR = `r"C:\\path\\to\\your\\java\\pack"`
-
-BEDROCK_RP_DIR = `r"C:\\path\\to\\output\\bedrock\\pack"`
-
 🧪 Usage
-
-Place your Java resource pack in the defined JAVA_RP_DIR
 
 Run the script:`
 PackConverter_JavaToBedrock.py
 `
 
-The Bedrock-compatible pack will be created in BEDROCK_RP_DIR
+
+Place your Java resource pack folder into the GUI/Panem directory. (Do not use a zip file.)
+
+Click the Start Conversion button.
+
+A .zip file will be generated containing your pack and the Geyser mappings.
+
+You're done! Review the contents, then rename the .zip file to use the .mcpack extension.
