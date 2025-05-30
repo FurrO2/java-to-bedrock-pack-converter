@@ -5,6 +5,15 @@ import uuid
 from collections import defaultdict
 import tempfile
 import zipfile
+from tkinter import ttk
+import datetime
+import hashlib
+from decimal import Decimal, ROUND_HALF_UP
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
@@ -81,7 +90,6 @@ def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, sou
     possible_paths.append(os.path.join(assets_root, 'minecraft', 'models', *rel.split('/')) + '.json')
 
     model_path = next((p for p in possible_paths if os.path.isfile(p)), None)
-
     if not model_path:
         print(f"❌ Modèle non trouvé pour {rel}")
         return
@@ -90,14 +98,28 @@ def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, sou
     try:
         with open(model_path, encoding='utf-8') as f:
             bb_model = json.load(f)
-        texture_list = list(bb_model.get('textures', {}).values())
+            
+        # Handle textures with namespace preservation
+        textures = bb_model.get('textures', {})
+        # First try to get the textures with their namespace
+        texture_list = []
+        for tex_value in textures.values():
+            # If texture has explicit namespace, preserve it
+            if ':' in tex_value:
+                texture_list.append(tex_value)
+            else:
+                # Try to infer namespace from model path
+                model_ns = model_path.split('assets' + os.sep)[-1].split(os.sep)[0]
+                if model_ns != 'minecraft':
+                    texture_list.append(f"{model_ns}:{tex_value}")
+                else:
+                    texture_list.append(tex_value)
     except Exception as e:
         print(f"⚠️ Texture introuvable dans {model_path}: {e}")
 
     geo_name = f"{item_base_name.lower().replace(' ', '_')}_cmd{threshold}"
-    tex_entry = texture_list[0].split(":", 1)[-1] if texture_list else rel
-    if tex_entry.startswith("item/"):
-        tex_entry = tex_entry[len("item/"):]
+    # Use namespaced texture path if available
+    tex_entry = texture_list[0] if texture_list else rel
 
     item_name = f"{item_base_name}_cmd{threshold}"
     items.append({
@@ -105,194 +127,227 @@ def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, sou
         "id": item_base_name,
         "custom_model_data": threshold,
         "display_name": f"§f{item_base_name.replace('_', ' ').title()} (CMD:{threshold})",
-        "texture": tex_entry
+        "texture": tex_entry  # valeur brute
     })
 
     convert_java_model_to_geo(model_path, item_name, tex_entry)
 
-def copy_all_item_textures():
-    assets_path = os.path.join(JAVA_RP_DIR, 'assets')
-    if os.path.isdir(assets_path):
-        for namespace in os.listdir(assets_path):
-            namespace_path = os.path.join(assets_path, namespace)
-            textures_root = os.path.join(namespace_path, 'textures')
-            if os.path.isdir(textures_root):
-                dst_root = os.path.join(BEDROCK_RP_DIR, 'textures')
-                shutil.copytree(textures_root, dst_root, dirs_exist_ok=True)
+def copy_all_item_textures(items=None):
+    """
+    Copie les textures en préservant la structure du namespace original.
+    Par exemple: assets/custom_stuff_v1/textures/item/... -> textures/custom_stuff_v1/item/...
+    """
+    src_root = os.path.join(JAVA_RP_DIR, 'assets')
+    if not os.path.exists(src_root):
+        print("⚠️ Dossier assets non trouvé")
+        return
+        
+    # Pour chaque namespace dans assets/
+    for ns in os.listdir(src_root):
+        ns_textures = os.path.join(src_root, ns, 'textures')
+        if not os.path.isdir(ns_textures):
+            continue
+            
+        # Parcours récursif des textures
+        for root, dirs, files in os.walk(ns_textures):
+            # Calcule le chemin relatif à partir de textures/
+            rel_path = os.path.relpath(root, ns_textures)
+            # Construit le chemin de destination en préservant le namespace
+            dst_path = os.path.join(BEDROCK_RP_DIR, 'textures', ns, rel_path)
+            
+            # Crée le dossier de destination
+            os.makedirs(dst_path, exist_ok=True)
+            
+            # Copie les fichiers
+            for file in files:
+                if file.endswith('.png'):
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(dst_path, file)
+                    shutil.copy2(src_file, dst_file)
     print(t("all_textures_copied"))
+
+import os
+import json
+import traceback
 
 def convert_java_model_to_geo(model_path, output_name, texture_key):
     try:
-        print("🔄 Lecture du modèle Java")
+        print("🔄 Lecture du modèle Java avancée")
         with open(model_path, encoding='utf-8') as f:
             model = json.load(f)
+            
+        # Extraire le namespace et le chemin de la texture
+        texture_namespace = "custom_stuff_v1"  # namespace par défaut
+        texture_path = texture_key
+        if ":" in texture_key:
+            texture_namespace, texture_path = texture_key.split(":", 1)
 
-        print("📌 Lecture des paramètres de base")
         identifier = f"geometry.{output_name}"
-        tex_w, tex_h = model.get('texture_size', [32, 32])
+        tex_w, tex_h = model.get('texture_size', [16, 16])
         bounds_width = model.get('visible_bounds_width', 2)
         bounds_height = model.get('visible_bounds_height', 2.5)
         bounds_offset = model.get('visible_bounds_offset', [0, 0.75, 0])
-
         elements = model.get('elements', [])
         groups = model.get('groups', [])
         print(f"➡️  {len(elements)} éléments, {len(groups)} groupes")
 
-        def calculate_pivot_from_origin(origin):
-            # Correction: X-8, Y inchangé, Z-8
-            return [
-                round(origin[0] - 8, 5),
-                round(origin[1], 5),
-                round(origin[2] - 8, 5)
-            ]
-
         def correct_uv_mapping(face, uv_data):
+            # Si les UV ne sont pas valides, ne pas inclure la face
             if "uv" not in uv_data or len(uv_data['uv']) != 4:
-                return {"uv": [0, 0], "uv_size": [1, 1]}
+                return None
             u0, v0, u1, v1 = uv_data['uv']
-            # Ajout de compensation de bordure (0.016) comme dans le script sh
-            x_sign = 1 if (u1 - u0) > 0 else -1
-            y_sign = 1 if (v1 - v0) > 0 else -1
-            
-            if face in ["up", "down"]:
-                return {
-                    "uv": [round(u1 - (0.016 * x_sign), 5), round(v1 - (0.016 * y_sign), 5)],
-                    "uv_size": [round((u0 - u1) + (0.016 * x_sign), 5), round((v0 - v1) + (0.016 * y_sign), 5)]
-                }
+            if face in ["north", "east", "south", "west"]:
+                uv = [round(u0, 3), round(v0, 3)]
+                uv_size = [round(abs(u1 - u0), 3), round(abs(v1 - v0), 3)]
+            elif face == "up":
+                uv = [round(u1, 3), round(v1, 3)]
+                uv_size = [round(abs(u1 - u0), 3), round(abs(v1 - v0), 3)]
+            elif face == "down":
+                uv = [round(u1, 3), round(v1, 3)]
+                uv_size = [round(abs(u1 - u0), 3), -round(abs(v1 - v0), 3)]
             else:
-                return {
-                    "uv": [round(u0 + (0.016 * x_sign), 5), round(v0 + (0.016 * y_sign), 5)],
-                    "uv_size": [round((u1 - u0) - (0.016 * x_sign), 5), round((v1 - v0) - (0.016 * y_sign), 5)]
-                }
+                uv = [round(u0, 3), round(v0, 3)]
+                uv_size = [round(abs(u1 - u0), 3), round(abs(v1 - v0), 3)]
+            return {
+                "uv": uv,
+                "uv_size": uv_size
+            }
 
-        def build_bone(group, parent_name=None):
+        def round4(value):
+            """Rounds a value to 4 decimal places."""
+            return round(value, 4)
+
+        def round6(value):
+            """Rounds a value to 5 decimal places."""
+            return round(value, 5)
+
+        def make_cube(e):
+            from_ = e.get('from', [0, 0, 0])
+            to_ = e.get('to', [0, 0, 0])
+            # X : -to[0] + 8, Y : from[1], Z : from[2] - 8
+            origin_x = round6(-to_[0] + 8)
+            origin_y = round6(from_[1])
+            origin_z = round6(from_[2] - 8)
+            size = [round6(to_[i] - from_[i]) for i in range(3)]
+            # Gestion du pivot : si rotation.origin existe, utiliser la même logique que pour les groupes
+            rot = e.get('rotation', {})
+            if isinstance(rot, dict) and 'origin' in rot:
+                pivot_raw = rot['origin']
+                pivot_x = round6(-pivot_raw[0] + 8)
+                pivot_y = round6(pivot_raw[1])
+                pivot_z = round6(pivot_raw[2] - 8)
+            else:
+                # Centre géométrique
+                pivot_x = round6(origin_x + size[0] / 2)
+                pivot_y = round6(origin_y + size[1] / 2)
+                pivot_z = round6(origin_z + size[2] / 2)
+            cube = {
+                "origin": [origin_x, origin_y, origin_z],
+                "size": size,
+                "uv": {},
+                "pivot": [pivot_x, pivot_y, pivot_z]
+            }
+            if isinstance(rot, dict):
+                angle = rot.get('angle', 0)
+                axis = rot.get('axis', 'y')
+                rotation = [0, 0, 0]
+                # Multiplier l'angle par -1 pour X et Y
+                if axis == 'x': rotation[0] = round6(-angle)
+                elif axis == 'y': rotation[1] = round6(-angle)
+                elif axis == 'z': rotation[2] = round6(angle)
+                if any(abs(r) > 1e-6 for r in rotation):
+                    cube["rotation"] = [r for r in rotation]
+            for face, data in e.get('faces', {}).items():
+                if data:
+                    cube['uv'][face] = correct_uv_mapping(face, data)
+            return cube
+
+        def build_bone(group, name_counts=None):
             try:
-                name = group.get('name', 'unnamed').replace(' ', '').lower()
-                
-                # Structure de base comme dans le script sh
-                bones = [{
-                    "name": "geyser_custom",
-                    "binding": "c.item_slot == 'head' ? 'head' : q.item_slot_to_bone_name(c.item_slot)",
-                    "pivot": [0, 8, 0]
-                }, {
-                    "name": "geyser_custom_x",
-                    "parent": "geyser_custom",
-                    "pivot": [0, 8, 0]
-                }, {
-                    "name": "geyser_custom_y",
-                    "parent": "geyser_custom_x",
-                    "pivot": [0, 8, 0]
-                }, {
-                    "name": "geyser_custom_z",
-                    "parent": "geyser_custom_y",
-                    "pivot": [0, 8, 0]
-                }]
-
+                if name_counts is None:
+                    name_counts = {}
+                base_name = group.get('name', 'unnamed').replace(' ', '_')
+                # Incrémente le compteur pour ce nom de groupe
+                count = name_counts.get(base_name, 0) + 1
+                name_counts[base_name] = count
+                # Ajoute un suffixe si ce n'est pas le premier
+                name = f"{base_name}{count if count > 1 else ''}"
+                origin = group.get('origin', [8, 8, 8])
+                # Pivot groupe : X : -origin[0] + 8, Y : origin[1], Z : origin[2] - 8
+                bone_pivot = [round6(-origin[0] + 8), round6(origin[1]), round6(origin[2] - 8)]
                 cubes = []
-                children_names = []
-                sub_bones = []
-
-                # Traitement des enfants
+                children_bones = []
+                cube_list = []
                 for child in group.get('children', []):
                     if isinstance(child, int) and child < len(elements):
-                        # Élément géométrique
                         e = elements[child]
-                        
-                        # Gestion de la rotation
-                        rotation = [0, 0, 0]
-                        if 'rotation' in e:
-                            if isinstance(e['rotation'], dict):
-                                rotation = e['rotation'].get('angle', 0)
-                                # Conversion angle unique vers [x, y, z]
-                                if isinstance(rotation, (int, float)):
-                                    axis = e['rotation'].get('axis', 'y')
-                                    rotation = [
-                                        rotation if axis == 'x' else 0,
-                                        rotation if axis == 'y' else 0,
-                                        rotation if axis == 'z' else 0
-                                    ]
-                            elif isinstance(e['rotation'], (list, tuple)):
-                                rotation = e['rotation']
-
-                        # Conversion des coordonnées avec gestion de la rotation
-                        from_pos = e.get('from', [0, 0, 0])
-                        to_pos = e.get('to', [0, 0, 0])
-                        
-                        cube_origin = [
-                            round(from_pos[0] - 8, 5),
-                            round(from_pos[1], 5),
-                            round(from_pos[2] - 8, 5)
-                        ]
-                        
-                        size = [
-                            round(to_pos[i] - from_pos[i], 5) 
-                            for i in range(3)
-                        ]
-
-                        cube = {
-                            "origin": cube_origin,
-                            "size": size,
-                            "uv": {}
-                        }
-
-                        # Ajout de la rotation si présente
-                        if any(r != 0 for r in rotation):
-                            cube["rotation"] = rotation
-
-                        # UV mapping avec gestion des faces manquantes
-                        for face, data in e.get('faces', {}).items():
-                            if data:  # Vérifie que les données UV existent
-                                cube['uv'][face] = correct_uv_mapping(face, data)
-
-                        cubes.append(cube)
-
+                        cube_list.append(e)
                     elif isinstance(child, dict):
-                        # Sous-groupe
-                        nested_bones = build_bone(child, name)
-                        if nested_bones:
-                            sub_bones.extend(nested_bones)
-                            children_names.append(nested_bones[0]['name'])
-
-                # Définir le pivot du bone à partir de l'origine du groupe ou par défaut [0, 8, 0]
-                bone_pivot = calculate_pivot_from_origin(group.get('origin', [8, 8, 8])) if 'origin' in group else [0, 8, 0]
-                # Construction du bone
+                        child_bone = build_bone(child, name_counts)
+                        if child_bone:
+                            children_bones.append(child_bone)
+                for e in cube_list:
+                    cubes.append(make_cube(e))
                 bone = {
                     "name": name,
                     "pivot": bone_pivot
                 }
-                
-                # Ajout des propriétés si présentes
                 if cubes:
                     bone["cubes"] = cubes
-                if parent_name:
-                    bone["parent"] = parent_name
-                if children_names:
-                    bone["children"] = children_names
-
-                return [bone] + sub_bones
-
+                if children_bones:
+                    bone["children"] = [b["name"] for b in children_bones if isinstance(b, dict) and "name" in b]
+                return bone
             except Exception as e:
-                print(f"⚠️ Erreur dans build_bone pour {group.get('name', 'unnamed')}: {e}")
-                return []
+                print(f"Error processing group {group.get('name')}: {e}")
+                traceback.print_exc()
+                return None
 
-        # Construction de tous les os à partir des groupes
         bones = []
-        for group in groups:
-            if not isinstance(group, dict):
-                print(f"⚠️ Groupe invalide ignoré : {group} (type {type(group).__name__})")
-                continue
-            try:
-                built = build_bone(group)
-                if built:
-                    bones.extend(built)
-            except Exception as e:
-                print(f"❌ Erreur lors du traitement du groupe '{group.get('name', 'inconnu')}': {e}")
+        # --- Collecte des éléments orphelins (non inclus dans un groupe) ---
+        orphan_elements = []
+        grouped_indices = set()
+        if groups and isinstance(groups, list):
+            for group in groups:
+                if isinstance(group, dict):
+                    for child in group.get('children', []):
+                        if isinstance(child, int):
+                            grouped_indices.add(child)
+        all_indices = set(range(len(elements)))
+        orphan_indices = all_indices - grouped_indices
+        for idx in orphan_indices:
+            orphan_elements.append((idx, elements[idx]))
+        # --- Fin collecte ---
 
-        # Construction des transformations d'affichage
-        # Display transforms building (EN)
+        if groups and isinstance(groups, list) and any(isinstance(g, dict) for g in groups):
+            name_counts = {}
+            for group in groups:
+                if isinstance(group, dict):
+                    built_bone = build_bone(group, name_counts=name_counts)
+                    if built_bone:
+                        bones.append(built_bone)
+        # Ajout : écrire les orphelins dans un bone séparé (même logique de cube)
+        if orphan_elements:
+            cubes = []
+            for idx, e in orphan_elements:
+                cubes.append(make_cube(e))
+            bones.insert(0, {
+                "name": "bb_main",
+                "pivot": [0, 0, 0],
+                "cubes": cubes
+            })
+        else:
+            for idx, e in enumerate(elements):
+                cubes = [make_cube(e)]
+                bone = {
+                    "name": f"bone_{idx}",
+                    "pivot": [0, 0, 0],
+                    "cubes": cubes
+                }
+                bones.append(bone)
+
         item_display_transforms = {}
         if "display" in model:
-            for key, data in model["display"].items():
+            for key, data in model.get("display", {}).items():
                 entry = {
                     "rotation": [round(v, 2) for v in data.get("rotation", [0, 0, 0])],
                     "translation": [round(v, 2) for v in data.get("translation", [0, 0, 0])],
@@ -304,8 +359,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                     entry["fit_to_frame"] = False
                 item_display_transforms[key.lower()] = entry
 
-        # Assemblage final du fichier géométrique
-        # Final geometry file assembly (EN)
         geo = {
             "format_version": "1.12.0",
             "minecraft:geometry": [
@@ -324,28 +377,27 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             ]
         }
 
-        # Écriture du fichier .geo.json
-        # Writing .geo.json file (EN)
         out_geo = os.path.join(BEDROCK_RP_DIR, 'models', 'entity', f'{output_name}.geo.json')
         print(f"💾 Écriture du fichier GEO : {out_geo}")
         with open(out_geo, 'w', encoding='utf-8') as f:
             json.dump(geo, f, indent='\t', separators=(',', ': '))
 
-        # Génération du render controller
-        # Render controller generation (EN)
-        fixed_tex_key = texture_key.replace('\\', '/').split('.')[0]
+        # Utilise la valeur brute de texture_key pour le render_controller        # Create render controller with proper texture namespace handling
         rc = {
             "format_version": "1.8.0",
             "render_controllers": {
                 f"controller.render.{output_name}": {
                     "geometry": identifier,
-                    "materials": [{"*": "material.default"}],
+                    "materials": [ {"*": "material.default"} ],
                     "textures": f"Array.textures.{output_name}"
                 }
             },
             "arrays": {
                 "textures": {
-                    f"Array.textures.{output_name}": [f"textures/item/{fixed_tex_key}"]
+                    f"Array.textures.{output_name}": [
+                        # Use proper namespace:path format for textures, with fallback to minecraft namespace
+                        texture_key if ":" in texture_key else f"minecraft:{texture_key}"
+                    ]
                 }
             }
         }
@@ -353,21 +405,140 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         print(f"💾 Écriture du fichier RenderController : {out_rc}")
         with open(out_rc, 'w', encoding='utf-8') as f:
             json.dump(rc, f, indent='\t', separators=(',', ': '))
-
-        print(f"✅ Conversion réussie: {output_name}")
-
+        print(f"✅ Conversion avancée réussie: {output_name}")
     except Exception as e:
         print(f"❌ Conversion modèle {model_path}: {e}")
+        traceback.print_exc()
         raise
 
+# --- Conversion PNG8 ---
+def convert_texture_to_png8(src, dst):
+    if not PIL_AVAILABLE:
+        print(f"⚠️ Pillow non installé, conversion PNG8 impossible pour {src}")
+        shutil.copy2(src, dst)
+        return
+    try:
+        from PIL import Image
+        img = Image.open(src).convert("RGBA")
+        img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+        img.save(dst, optimize=True)
+        print(f"✅ PNG8 généré : {dst}")
+    except Exception as e:
+        print(f"❌ Erreur PNG8 {src}: {e}")
+        shutil.copy2(src, dst)
 
+# --- Génération animation Bedrock ---
+def convert_java_display_to_bedrock_animation(model_path, geometry):
+    try:
+        with open(model_path, encoding='utf-8') as f:
+            model = json.load(f)
+        display = model.get('display', {})
+        bones = {}
+        for key, data in display.items():
+            bone_name = f"{geometry}_{key}"
+            bones[bone_name] = {
+                "rotation": data.get("rotation", [0,0,0]),
+                "translation": data.get("translation", [0,0,0]),
+                "scale": data.get("scale", [1,1,1])
+            }
+        return {
+            "format_version": "1.8.0",
+            "animations": {
+                f"animation.{geometry}.display": {
+                    "loop": True,
+                    "bones": bones
+                }
+            }
+        }
+    except Exception as e:
+        print(f"❌ Erreur animation Bedrock: {e}")
+        return {}
 
+# --- Génération attachable Bedrock ---
+def generate_attachable_json(output_name, texture_key, geometry, out_dir):
+    # Parse the texture_key to handle namespaced paths
+    if ":" in texture_key:
+        namespace, texture_path = texture_key.split(":", 1)
+        # Format the texture path to preserve namespace structure
+        texture_ref = f"textures/{namespace}/{texture_path}"
+    else:
+        # Default to minecraft namespace if none provided
+        texture_ref = f"textures/minecraft/{texture_key}"
 
+    attachable = {
+        "format_version": "1.10.0",
+        "minecraft:attachable": {
+            "description": {
+                "identifier": f"custom:{output_name}",
+                "materials": {"default": "material.default"},
+                "textures": {"default": texture_ref},
+                "geometry": {"default": f"geometry.{output_name}"},
+                "render_controllers": [f"controller.render.{output_name}"]
+            }
+        }
+    }
+    out_path = os.path.join(out_dir, f"{output_name}.attachable.json")
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(attachable, f, indent=4)
+    print(f"💾 Attachable généré : {out_path}")
 
+# --- Génération fichiers de langue Bedrock ---
+def write_lang_files(lang_dict, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    lang_path = os.path.join(out_dir, "en_US.lang")
+    with open(lang_path, "w", encoding="utf-8") as f:
+        for path_hash, item in lang_dict.items():
+            entry = f'item.custom:{path_hash}.name={item}\n'
+            f.write(entry)
+    shutil.copy(lang_path, os.path.join(out_dir, "en_GB.lang"))
+    with open(os.path.join(out_dir, "languages.json"), "w", encoding="utf-8") as f:
+        json.dump(["en_US", "en_GB"], f)
+    print(f"📝 Lang files générés dans {out_dir}")
 
+# --- Orchestrateur fidèle au squelette ---
+def hash7(s):
+    return hashlib.md5(s.encode()).hexdigest()[:7]
 
+def convert_model(model_path, item_name, generated, lang_dict, bedrock_dir):
+    # 1. Génération d'un hash unique pour l'item
+    path_hash = hash7(item_name)
+    geometry = item_name
+    
+    # Detect namespace from item_name or model_path
+    namespace = "minecraft"
+    if ":" in item_name:
+        namespace, _ = item_name.split(":", 1)
+    else:
+        # Try to detect from model_path
+        model_dir = os.path.dirname(model_path)
+        assets_dir = os.path.join(JAVA_RP_DIR, "assets")
+        if model_dir.startswith(assets_dir):
+            rel_path = os.path.relpath(model_dir, assets_dir)
+            if os.path.sep in rel_path:
+                namespace = rel_path.split(os.path.sep)[0]
 
-
+    # 2. Conversion du modèle Java en geometry Bedrock avec namespace
+    convert_java_model_to_geo(model_path, item_name, f"{namespace}:{item_name}")  
+    
+    # 3. Génération de l'animation Bedrock
+    anim = convert_java_display_to_bedrock_animation(model_path, geometry)
+    anim_dir = os.path.join(bedrock_dir, "animations")
+    os.makedirs(anim_dir, exist_ok=True)
+    anim_path = os.path.join(anim_dir, f"animation.{item_name}.json")
+    with open(anim_path, 'w', encoding='utf-8') as f:
+        json.dump(anim, f, indent=4)
+        
+    # 4. Génération du fichier attachable avec le bon namespace
+    attachable_dir = os.path.join(bedrock_dir, "attachables")
+    os.makedirs(attachable_dir, exist_ok=True)
+    generate_attachable_json(item_name, f"{namespace}:{item_name}", geometry, attachable_dir)
+    
+    # 5. Ajout au dictionnaire lang
+    lang_dict[path_hash] = item_name
+    # 6. Conversion PNG8 de la texture si elle existe
+    src_texture = os.path.join(bedrock_dir, "textures", "item", f"{item_name}.png")
+    if os.path.isfile(src_texture):
+        convert_texture_to_png8(src_texture, src_texture)
 
 def copy_sounds():
     assets_path = os.path.join(JAVA_RP_DIR, 'assets')
@@ -474,8 +645,15 @@ def generate_custom_items_json(items):
         texture = f"{base_name}_cmd{cmd}"
 
         clean_texture = item['texture'].replace('\\', '/').split('.')[0]
-        if clean_texture.startswith('custom_stuff_v1:'):
-            clean_texture = clean_texture[len('custom_stuff_v1:'):]
+        # Remove namespace if present
+        if ':' in clean_texture:
+            clean_texture = clean_texture.split(':', 1)[1]
+        # Remove leading slashes
+        clean_texture = clean_texture.lstrip('/')
+        # Remove all leading 'item/'
+        while clean_texture.startswith('item/'):
+            clean_texture = clean_texture[5:]
+        bedrock_texture_path = f"textures/item/{clean_texture}"
 
         custom_entry = {
             "name": texture,
@@ -508,7 +686,7 @@ def generate_custom_items_json(items):
                             "default": "material.default"
                         },
                         "textures": {
-                            "default": f"textures/item/{clean_texture}"
+                            "default": bedrock_texture_path
                         },
                         "geometry": f"geometry.{texture}",
                         "render_controllers": [
@@ -540,22 +718,31 @@ def extract_custom_model_data():
     items_dir = os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'items')
     items_dir = os.path.normpath(items_dir)
     tex_root = os.path.join(BEDROCK_RP_DIR, 'textures', 'item')
+    
     if not os.path.isdir(items_dir):
         print(f"❌ Introuvable: {items_dir}")
         return items
-    for r,_,fs in os.walk(items_dir):
+        
+    for r, _, fs in os.walk(items_dir):
         for f in fs:
-            if not f.lower().endswith(('.json','.yml','.yaml')): continue
-            path=os.path.join(r,f)
+            if not f.lower().endswith(('.json','.yml','.yaml')):
+                continue
+                
+            path = os.path.join(r, f)
             try:
-                with open(path,encoding='utf-8') as pf:
-                    data=yaml.safe_load(pf) if f.lower().endswith(('.yml','.yaml')) else json.load(pf)
-                base=os.path.splitext(f)[0]
-                for e in data.get('model',{}).get('entries',[]): process_model_entry(e,base,tex_root,items,cmd_map,path)
-                fb=data.get('model',{}).get('fallback',{}).get('model')
-                if fb: process_model_entry({'threshold':-1,'model':{'model':fb}},base,tex_root,items,cmd_map,path)
+                with open(path, encoding='utf-8') as pf:
+                    data = yaml.safe_load(pf) if f.lower().endswith(('.yml','.yaml')) else json.load(pf)
+                base = os.path.splitext(f)[0]
+                
+                for e in data.get('model',{}).get('entries',[]):
+                    process_model_entry(e, base, tex_root, items, cmd_map, path)
+                    
+                fb = data.get('model',{}).get('fallback',{}).get('model')
+                if fb:
+                    process_model_entry({'threshold':-1,'model':{'model':fb}}, base, tex_root, items, cmd_map, path)
             except Exception as e:
                 print(f"❌ Erreur lecture {f}: {e}")
+                
     return items
 
 def list_java_assets():
@@ -573,14 +760,31 @@ def list_java_assets():
 def generate_item_texture_json(items):
     texture_data = {}
     for item in items:
-        texture_path = item['texture'].replace('\\', '/').split('.')[0]
-        if texture_path.startswith('custom_stuff_v1:'):
-            texture_path = texture_path[len('custom_stuff_v1:'):]
-        full_texture_path = f"textures/item/{texture_path}"
-        unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
-        texture_data[unique_name] = {
-            "textures": full_texture_path
-        }
+        texture_path = item['texture']  # Use original texture path
+        cmd = item.get('custom_model_data', '')
+        item_id = item['id']
+
+        # Create a unique identifier for items with custom model data
+        texture_id = f"{item_id}_cmd{cmd}" if cmd else item_id
+
+        # Handle namespaced texture paths
+        if ':' in texture_path:
+            namespace, path = texture_path.split(':', 1)
+            texture_data[texture_id] = {
+                "textures": f"textures/{namespace}/{path}"
+            }
+        else:
+            # Try to infer namespace from item id
+            if ':' in item_id:
+                namespace = item_id.split(':', 1)[0]
+                texture_data[texture_id] = {
+                    "textures": f"textures/{namespace}/{texture_path}"
+                }
+            else:
+                # Default to minecraft namespace as fallback
+                texture_data[texture_id] = {
+                    "textures": f"textures/minecraft/{texture_path}"
+                }
 
     item_texture = {
         "resource_pack_name": "Converted Resource Pack",
@@ -657,6 +861,10 @@ def generate_behavior_pack(items):
 
 
 def generate_geyser_mapping_json(items):
+    """
+    Génère un mapping Geyser v2 conforme à l'API ItemMappings.
+    Voir https://github.com/eclipseisoffline/geyser-example-mappings
+    """
     mappings = {
         "format_version": 2,
         "items": {}
@@ -665,26 +873,24 @@ def generate_geyser_mapping_json(items):
     for item in items:
         base_item = item['id'] if item['id'].startswith("minecraft:") else f"minecraft:{item['id']}"
         cmd = str(item['custom_model_data'])
+        unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
 
-        # Créer la structure si absente
-        # Create structure if missing (EN)
         if base_item not in mappings["items"]:
             mappings["items"][base_item] = {
                 "custom_model_data": {}
             }
 
-        # Ajouter le mapping pour ce CustomModelData
-        # Add mapping for this CustomModelData (EN)
         mappings["items"][base_item]["custom_model_data"][cmd] = {
-            "bedrock_identifier": base_item,  # Peut être adapté si nécessaire
-            "display_name": item.get("display_name", "")
+            "bedrock_identifier": f"custom:{unique_name}",
+            "display_name": item.get("display_name", ""),
+            "texture": unique_name,
+            "geometry": f"geometry.{unique_name}"
         }
 
-    output_path = os.path.join(BEDROCK_RP_DIR.replace("bedrock", "geyser_mappings"), "geyser-mapping.json")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_path = os.path.join(BEDROCK_RP_DIR, "geyser-mapping.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(mappings, f, indent=4)
-    print(t("geyser_mapping_generated"))
+    print("✅ geyser-mapping.json generated in resource pack")
 
 
 def create_mcpack(source_dir, output_dir, pack_name):
@@ -695,6 +901,12 @@ def create_mcpack(source_dir, output_dir, pack_name):
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
     shutil.copytree(source_dir, temp_dir)
+
+    # Ensure geyser-mapping.json exists in temp dir
+    geyser_mapping_path = os.path.join(source_dir, "geyser-mapping.json")
+    temp_geyser_mapping = os.path.join(temp_dir, "geyser-mapping.json")
+    if os.path.exists(geyser_mapping_path) and not os.path.exists(temp_geyser_mapping):
+        shutil.copy2(geyser_mapping_path, temp_geyser_mapping)
 
     zip_path = mcpack_path.replace('.mcpack', '.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -844,10 +1056,36 @@ TRANSLATIONS = {
     }
 }
 
-LANG = "fr"
+LANG = "en"
+
+import sys
+if "--lang" in sys.argv:
+    idx = sys.argv.index("--lang")
+    if idx + 1 < len(sys.argv):
+        LANG = sys.argv[idx + 1]
 
 def t(key, **kwargs):
-    return TRANSLATIONS[LANG].get(key, key).format(**kwargs)
+    value = TRANSLATIONS[LANG].get(key)
+    if value is None:
+        value = key
+    return value.format(**kwargs)
+
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'packconverter_config.json')
+
+def load_last_java_dir():
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data.get('last_java_rp_dir', '')
+    except Exception:
+        return ''
+
+def save_last_java_dir(path):
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'last_java_rp_dir': path}, f)
+    except Exception:
+        pass
 
 class PackConverterGUI:
     def __init__(self, root):
@@ -866,7 +1104,8 @@ class PackConverterGUI:
         self.lang_menu.pack(side="left")
 
         # Variables
-        self.java_dir = tk.StringVar(value=JAVA_RP_DIR)
+        last_java_dir = load_last_java_dir()
+        self.java_dir = tk.StringVar(value=last_java_dir if last_java_dir else JAVA_RP_DIR)
         self.bedrock_dir = tk.StringVar(value="")  # Ajouté pour éviter l'erreur d'attribut
 
         # Modern Card-like Frame
@@ -893,12 +1132,22 @@ class PackConverterGUI:
         self.logs_card.pack(fill="both", expand=True, padx=20, pady=(0, 15))
         self.logs_label = tk.Label(self.logs_card, text=t("logs"), font=("Segoe UI", 11, "bold"), bg="#f4f4f4")
         self.logs_label.pack(anchor="w", padx=10, pady=(8, 0))
+        # Bouton pour effacer les logs
+        self.clear_logs_btn = tk.Button(self.logs_card, text="Effacer les logs", command=self.clear_logs, font=("Segoe UI", 9), bg="#e0e0e0")
+        self.clear_logs_btn.pack(anchor="e", padx=10, pady=(0, 5))
+        # Progress bar
+        self.progress = ttk.Progressbar(self.logs_card, orient="horizontal", mode="determinate", length=400)
+        self.progress.pack(fill="x", padx=10, pady=(5, 5))
+        self.progress["value"] = 0
+        self.progress["maximum"] = 100  
         self.logbox = scrolledtext.ScrolledText(self.logs_card, height=10, state="disabled", font=("Consolas", 10), bg="#fafafa")
         self.logbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # Validation initiale des chemins
         self.java_dir.trace_add("write", lambda *args: self.validate_paths())
         self.validate_paths()
+
+        self.last_logs = ""  # Ajout pour stocker les dernières logs
 
     def validate_paths(self):
         path = self.java_dir.get()
@@ -935,18 +1184,35 @@ class PackConverterGUI:
             path = filedialog.askdirectory(title="Sélectionne le dossier Java RP")
         if path:
             self.java_dir.set(path)
+            save_last_java_dir(path)
 
     def browse_bedrock(self):
         path = filedialog.askdirectory(title="Sélectionne le dossier Bedrock RP")
         if path:
             self.bedrock_dir.set(path)
 
-    def log(self, msg):
+    def clear_logs(self):
+        self.last_logs = ""
         self.logbox.config(state="normal")
-        self.logbox.insert("end", msg + "\n")
+        self.logbox.delete("1.0", "end")
+        self.logbox.config(state="disabled")
+
+    def log(self, msg):
+        now = datetime.datetime.now().strftime("[%H:%M:%S] ")
+        self.logbox.config(state="normal")
+        for line in msg.splitlines():
+            log_line = now + line + "\n"
+            self.logbox.insert("end", log_line)
+            self.last_logs += log_line
         self.logbox.see("end")
         self.logbox.config(state="disabled")
         self.root.update()
+
+    def set_progress(self, value, maximum=None):
+        if maximum is not None:
+            self.progress["maximum"] = maximum
+        self.progress["value"] = value
+        self.root.update_idletasks()
 
     def run_conversion(self):
         import sys
@@ -959,13 +1225,18 @@ class PackConverterGUI:
             def __init__(self, gui):
                 super().__init__()
                 self.gui = gui
-            def write(self, s):
+
+            def write(self, s: str) -> int:
                 self.gui.log(s.rstrip())
-            def flush(self): pass
+                return len(s.encode('utf-8'))
+
+            def flush(self) -> None:
+                pass
 
         sys.stdout = TextRedirector(self)
         sys.stderr = TextRedirector(self)
 
+        self.convert_btn.config(state="disabled")
         try:
             # Met à jour les variables globales
             global JAVA_RP_DIR, BEDROCK_RP_DIR
@@ -985,24 +1256,60 @@ class PackConverterGUI:
                     zip_ref.extractall(temp_unzip_dir)
                 JAVA_RP_DIR = temp_unzip_dir + os.sep
 
-            # Lancement conversion
-            clean_bedrock_directory()
-            create_bedrock_structure()
-            copy_all_item_textures()
-            copy_sounds()
-            copy_pack_icon()
-            generate_manifest()
+            # Barre de progression et étapes
+            steps = [
+                clean_bedrock_directory,
+                create_bedrock_structure,
+                copy_all_item_textures,
+                copy_sounds,
+                copy_pack_icon,
+                generate_manifest,
+                extract_custom_model_data,
+                # Ajout : copie des textures après extraction des items
+                copy_all_item_textures,
+                generate_custom_items_json,
+                generate_item_texture_json,
+                generate_geyser_mapping_json,
+                lambda: validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity")),
+                lambda: validate_consistency(items)
+            ]
+            self.set_progress(0, len(steps))
+            items = []
+            for i, step in enumerate(steps):
+                self.log("-" * 40 + f"  Étape {i+1}/{len(steps)}  " + "-" * 40)
+                if step == extract_custom_model_data:
+                    items = step()
+                elif step in (generate_custom_items_json, generate_item_texture_json, generate_geyser_mapping_json, validate_consistency):
+                    step(items)
+                else:
+                    step()
+                self.set_progress(i + 1)
+                self.progress.update_idletasks()
+
+            # Extraction des items custom
             items = extract_custom_model_data()
-            generate_custom_items_json(items)
-            generate_item_texture_json(items)
-            generate_geyser_mapping_json(items)
-            validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity"))
-            validate_consistency(items)
+            # Conversion avancée pour chaque item (geometry, animation, attachable, PNG8, lang)
+            lang_dict = {}
+            for item in items:
+                model_path = os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'models', f"{item['texture']}.json")
+                if not os.path.isfile(model_path):
+                    # fallback: cherche dans tous les namespaces
+                    for ns in os.listdir(os.path.join(JAVA_RP_DIR, 'assets')):
+                        candidate = os.path.join(JAVA_RP_DIR, 'assets', ns, 'models', f"{item['texture']}.json")
+                        if os.path.isfile(candidate):
+                            model_path = candidate
+                            break
+                if os.path.isfile(model_path):
+                    convert_model(model_path, item['texture'], True, lang_dict, BEDROCK_RP_DIR)
+            # Génération des fichiers de langue Bedrock
+            write_lang_files(lang_dict, os.path.join(BEDROCK_RP_DIR, "texts"))
 
             # Sélection du dossier de sortie par l'utilisateur
             output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie pour le ZIP")
             if not output_dir:
                 self.log("❌ Opération annulée : aucun dossier de sortie sélectionné.")
+                self.set_progress(0)
+                self.convert_btn.config(state="normal")
                 return
 
             # --- Détermination du nom du fichier exporté ---
@@ -1017,6 +1324,11 @@ class PackConverterGUI:
 
             # Création du fichier zip contenant tout le pack Bedrock
             import zipfile
+            # --- Ajout : écrire les logs dans un fichier temporaire ---
+            logs_path = os.path.join(BEDROCK_RP_DIR, "conversion_logs.txt")
+            with open(logs_path, "w", encoding="utf-8") as f:
+                f.write(self.last_logs)
+            # --- Fin ajout logs ---
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
                     for file in files:
@@ -1026,9 +1338,13 @@ class PackConverterGUI:
 
             self.log(f"✅ Pack exporté dans : {zip_path}")
             messagebox.showinfo(t("success"), f"Pack exporté dans :\n{zip_path}")
+            self.set_progress(0)
+            self.convert_btn.config(state="normal")
         except Exception as e:
             self.log(t("error", e=str(e)))
             messagebox.showerror(t("error_title"), t("conversion_error", e=str(e)))
+            self.set_progress(0)
+            self.convert_btn.config(state="normal")
 
     def update_labels(self):
         # Met à jour tous les labels/boutons selon la langue
@@ -1037,6 +1353,7 @@ class PackConverterGUI:
         self.java_browse_btn.config(text=t("browse"))
         self.convert_btn.config(text=t("start_conversion"))
         self.logs_label.config(text=t("logs"))
+        self.clear_logs_btn.config(text="Effacer les logs" if LANG == "fr" else "Clear logs")
         
         # Reconstruction du menu
         menu = self.lang_menu["menu"]
@@ -1064,6 +1381,7 @@ if __name__ == "__main__":
             copy_pack_icon()
             generate_manifest()
             items = extract_custom_model_data()
+            copy_all_item_textures(items)
             generate_custom_items_json(items)
             generate_item_texture_json(items)
             generate_geyser_mapping_json(items)
