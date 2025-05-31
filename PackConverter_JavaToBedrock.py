@@ -175,7 +175,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         print("🔄 Lecture du modèle Java avancée")
         with open(model_path, encoding='utf-8') as f:
             model = json.load(f)
-            
+        
         # Extraire le namespace et le chemin de la texture
         texture_namespace = "custom_stuff_v1"  # namespace par défaut
         texture_path = texture_key
@@ -184,6 +184,10 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
 
         identifier = f"geometry.{output_name}"
         tex_w, tex_h = model.get('texture_size', [16, 16])
+        # Si texture_size est spécifié, divise par 2 pour l'output Bedrock
+        if 'texture_size' in model:
+            tex_w = int(tex_w // 2)
+            tex_h = int(tex_h // 2)
         bounds_width = model.get('visible_bounds_width', 2)
         bounds_height = model.get('visible_bounds_height', 2.5)
         bounds_offset = model.get('visible_bounds_offset', [0, 0.75, 0])
@@ -192,7 +196,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         print(f"➡️  {len(elements)} éléments, {len(groups)} groupes")
 
         def correct_uv_mapping(face, uv_data):
-            # Si les UV ne sont pas valides, ne pas inclure la face
             if "uv" not in uv_data or len(uv_data['uv']) != 4:
                 return None
             u0, v0, u1, v1 = uv_data['uv']
@@ -214,22 +217,18 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             }
 
         def round4(value):
-            """Rounds a value to 4 decimal places."""
             return round(value, 4)
 
         def round6(value):
-            """Rounds a value to 5 decimal places."""
-            return round(value, 5)
+            return round(value, 6)
 
         def make_cube(e):
             from_ = e.get('from', [0, 0, 0])
             to_ = e.get('to', [0, 0, 0])
-            # X : -to[0] + 8, Y : from[1], Z : from[2] - 8
             origin_x = round6(-to_[0] + 8)
             origin_y = round6(from_[1])
             origin_z = round6(from_[2] - 8)
             size = [round6(to_[i] - from_[i]) for i in range(3)]
-            # Gestion du pivot : si rotation.origin existe, utiliser la même logique que pour les groupes
             rot = e.get('rotation', {})
             if isinstance(rot, dict) and 'origin' in rot:
                 pivot_raw = rot['origin']
@@ -237,7 +236,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 pivot_y = round6(pivot_raw[1])
                 pivot_z = round6(pivot_raw[2] - 8)
             else:
-                # Centre géométrique
                 pivot_x = round6(origin_x + size[0] / 2)
                 pivot_y = round6(origin_y + size[1] / 2)
                 pivot_z = round6(origin_z + size[2] / 2)
@@ -251,7 +249,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 angle = rot.get('angle', 0)
                 axis = rot.get('axis', 'y')
                 rotation = [0, 0, 0]
-                # Multiplier l'angle par -1 pour X et Y
                 if axis == 'x': rotation[0] = round6(-angle)
                 elif axis == 'y': rotation[1] = round6(-angle)
                 elif axis == 'z': rotation[2] = round6(angle)
@@ -267,13 +264,10 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 if name_counts is None:
                     name_counts = {}
                 base_name = group.get('name', 'unnamed').replace(' ', '_')
-                # Incrémente le compteur pour ce nom de groupe
                 count = name_counts.get(base_name, 0) + 1
                 name_counts[base_name] = count
-                # Ajoute un suffixe si ce n'est pas le premier
                 name = f"{base_name}{count if count > 1 else ''}"
                 origin = group.get('origin', [8, 8, 8])
-                # Pivot groupe : X : -origin[0] + 8, Y : origin[1], Z : origin[2] - 8
                 bone_pivot = [round6(-origin[0] + 8), round6(origin[1]), round6(origin[2] - 8)]
                 cubes = []
                 children_bones = []
@@ -296,7 +290,10 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                     bone["cubes"] = cubes
                 if children_bones:
                     bone["children"] = [b["name"] for b in children_bones if isinstance(b, dict) and "name" in b]
-                return bone
+                # Only return bone if it has cubes or children
+                if cubes or children_bones:
+                    return bone
+                return None
             except Exception as e:
                 print(f"Error processing group {group.get('name')}: {e}")
                 traceback.print_exc()
@@ -325,17 +322,18 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                     built_bone = build_bone(group, name_counts=name_counts)
                     if built_bone:
                         bones.append(built_bone)
-        # Ajout : écrire les orphelins dans un bone séparé (même logique de cube)
-        if orphan_elements:
-            cubes = []
-            for idx, e in orphan_elements:
-                cubes.append(make_cube(e))
-            bones.insert(0, {
-                "name": "bb_main",
-                "pivot": [0, 0, 0],
-                "cubes": cubes
-            })
+            # Only add orphan bone if there are truly orphan elements
+            if orphan_elements:
+                cubes = []
+                for idx, e in orphan_elements:
+                    cubes.append(make_cube(e))
+                bones.append({
+                    "name": "bb_main",
+                    "pivot": [0, 0, 0],
+                    "cubes": cubes
+                })
         else:
+            # No groups: one bone per element
             for idx, e in enumerate(elements):
                 cubes = [make_cube(e)]
                 bone = {
@@ -382,7 +380,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         with open(out_geo, 'w', encoding='utf-8') as f:
             json.dump(geo, f, indent='\t', separators=(',', ': '))
 
-        # Utilise la valeur brute de texture_key pour le render_controller        # Create render controller with proper texture namespace handling
         rc = {
             "format_version": "1.8.0",
             "render_controllers": {
@@ -395,7 +392,6 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             "arrays": {
                 "textures": {
                     f"Array.textures.{output_name}": [
-                        # Use proper namespace:path format for textures, with fallback to minecraft namespace
                         texture_key if ":" in texture_key else f"minecraft:{texture_key}"
                     ]
                 }
@@ -770,6 +766,9 @@ def generate_item_texture_json(items):
         # Handle namespaced texture paths
         if ':' in texture_path:
             namespace, path = texture_path.split(':', 1)
+            # Corrige le chemin pour Bedrock : retire le segment 'item/' après le namespace
+            if path.startswith('item/'):
+                path = path[len('item/'):]
             texture_data[texture_id] = {
                 "textures": f"textures/{namespace}/{path}"
             }
@@ -777,13 +776,20 @@ def generate_item_texture_json(items):
             # Try to infer namespace from item id
             if ':' in item_id:
                 namespace = item_id.split(':', 1)[0]
+                # Corrige le chemin pour Bedrock : retire le segment 'item/' après le namespace
+                path = texture_path
+                if path.startswith('item/'):
+                    path = path[len('item/'):]
                 texture_data[texture_id] = {
-                    "textures": f"textures/{namespace}/{texture_path}"
+                    "textures": f"textures/{namespace}/{path}"
                 }
             else:
                 # Default to minecraft namespace as fallback
+                path = texture_path
+                if path.startswith('item/'):
+                    path = path[len('item/'):]
                 texture_data[texture_id] = {
-                    "textures": f"textures/minecraft/{texture_path}"
+                    "textures": f"textures/minecraft/{path}"
                 }
 
     item_texture = {
@@ -876,16 +882,15 @@ def generate_geyser_mapping_json(items):
         unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
 
         if base_item not in mappings["items"]:
-            mappings["items"][base_item] = {
-                "custom_model_data": {}
-            }
+            mappings["items"][base_item] = []
 
-        mappings["items"][base_item]["custom_model_data"][cmd] = {
+        mappings["items"][base_item].append({
+            "custom_model_data": cmd,
             "bedrock_identifier": f"custom:{unique_name}",
             "display_name": item.get("display_name", ""),
             "texture": unique_name,
             "geometry": f"geometry.{unique_name}"
-        }
+        })
 
     output_path = os.path.join(BEDROCK_RP_DIR, "geyser-mapping.json")
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -1108,6 +1113,20 @@ class PackConverterGUI:
         self.java_dir = tk.StringVar(value=last_java_dir if last_java_dir else JAVA_RP_DIR)
         self.bedrock_dir = tk.StringVar(value="")  # Ajouté pour éviter l'erreur d'attribut
 
+        # --- Export format option ---
+        self.export_format_var = tk.StringVar(value="zip")
+        export_frame = tk.Frame(root)
+        export_frame.pack(anchor="ne", padx=10, pady=(0, 0))
+        self.export_label = tk.Label(export_frame, text="Export format:", font=("Segoe UI", 10))
+        self.export_label.pack(side="left")
+        self.export_zip_radio = tk.Radiobutton(export_frame, text="ZIP", variable=self.export_format_var, value="zip")
+        self.export_zip_radio.pack(side="left")
+        self.export_folder_radio = tk.Radiobutton(export_frame, text="Folder", variable=self.export_format_var, value="folder")
+        self.export_folder_radio.pack(side="left")
+        self.export_mcpack_radio = tk.Radiobutton(export_frame, text="MCPACK", variable=self.export_format_var, value="mcpack")
+        self.export_mcpack_radio.pack(side="left")
+        # --- End export format option ---
+
         # Modern Card-like Frame
         self.main_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
         self.main_card.pack(fill="x", padx=20, pady=(20, 5))
@@ -1305,7 +1324,7 @@ class PackConverterGUI:
             write_lang_files(lang_dict, os.path.join(BEDROCK_RP_DIR, "texts"))
 
             # Sélection du dossier de sortie par l'utilisateur
-            output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie pour le ZIP")
+            output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie")
             if not output_dir:
                 self.log("❌ Opération annulée : aucun dossier de sortie sélectionné.")
                 self.set_progress(0)
@@ -1318,26 +1337,43 @@ class PackConverterGUI:
                 base_name = os.path.splitext(os.path.basename(java_input_path))[0]
             else:
                 base_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
-            export_name = f"{base_name}[BConverted].zip"
-            zip_path = os.path.join(output_dir, export_name)
+            export_name = f"{base_name}[BConverted]"
             # --- Fin nom fichier ---
 
-            # Création du fichier zip contenant tout le pack Bedrock
-            import zipfile
             # --- Ajout : écrire les logs dans un fichier temporaire ---
             logs_path = os.path.join(BEDROCK_RP_DIR, "conversion_logs.txt")
             with open(logs_path, "w", encoding="utf-8") as f:
                 f.write(self.last_logs)
             # --- Fin ajout logs ---
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
-                    for file in files:
-                        file_path = os.path.join(rootdir, file)
-                        arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
-                        zipf.write(file_path, arcname)
 
-            self.log(f"✅ Pack exporté dans : {zip_path}")
-            messagebox.showinfo(t("success"), f"Pack exporté dans :\n{zip_path}")
+            export_format = self.export_format_var.get()
+            if export_format == "zip":
+                zip_path = os.path.join(output_dir, f"{export_name}.zip")
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
+                        for file in files:
+                            file_path = os.path.join(rootdir, file)
+                            arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
+                            zipf.write(file_path, arcname)
+                self.log(f"✅ Pack exporté dans : {zip_path}")
+                messagebox.showinfo(t("success"), f"Pack exporté dans :\n{zip_path}")
+            elif export_format == "mcpack":
+                mcpack_path = os.path.join(output_dir, f"{export_name}.mcpack")
+                # Utilise la fonction create_mcpack déjà définie
+                create_mcpack(BEDROCK_RP_DIR, output_dir, export_name)
+                self.log(f"✅ Pack exporté dans : {mcpack_path}")
+                messagebox.showinfo(t("success"), f"Pack exporté dans :\n{mcpack_path}")
+            elif export_format == "folder":
+                dest_folder = os.path.join(output_dir, export_name)
+                if os.path.exists(dest_folder):
+                    shutil.rmtree(dest_folder)
+                shutil.copytree(BEDROCK_RP_DIR, dest_folder)
+                self.log(f"✅ Pack exporté dans le dossier : {dest_folder}")
+                messagebox.showinfo(t("success"), f"Pack exporté dans le dossier :\n{dest_folder}")
+            else:
+                self.log("❌ Format d'export inconnu.")
+                messagebox.showerror(t("error_title"), "Format d'export inconnu.")
+
             self.set_progress(0)
             self.convert_btn.config(state="normal")
         except Exception as e:
@@ -1354,7 +1390,7 @@ class PackConverterGUI:
         self.convert_btn.config(text=t("start_conversion"))
         self.logs_label.config(text=t("logs"))
         self.clear_logs_btn.config(text="Effacer les logs" if LANG == "fr" else "Clear logs")
-        
+        self.export_label.config(text="Format d'export :" if LANG == "fr" else "Export format:")
         # Reconstruction du menu
         menu = self.lang_menu["menu"]
         menu.delete(0, "end")
