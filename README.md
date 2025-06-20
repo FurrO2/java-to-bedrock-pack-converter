@@ -10,9 +10,6 @@ This script automates the conversion of a Minecraft Java Edition resource pack t
 ---
 
 
-## ❗⛔FOR NOW, THE MODEL CONVERTER ISN'T WORKING WELL, so this need to be fixed⛔❗
-
-
 ## 📦 Features
 
 - 🔁 Automatically converts Java JSON models to Bedrock-compatible geometries (`.geo.json`)
