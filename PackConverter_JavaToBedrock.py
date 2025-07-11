@@ -1454,6 +1454,80 @@ def save_last_java_dir(path):
         pass
 
 class PackConverterGUI:
+
+    def generate_item_texture_json(self, items, textures_dir):
+        """
+        Génère item_texture.json au format attendu :
+        "texture_data": {
+            "gmdl_xxx": { "textures": "textures/minecraft/item/cactus/bow_1" }, ...
+        }
+        "gmdl_xxx" = nom du modèle (item['name'] ou item['model'] ou item['id'] selon structure)
+        "textures" = chemin complet sans extension .png
+        """
+        texture_data = {}
+        for item in items:
+            # La clé doit être le nom du modèle Bedrock (ex: copper_ingot_cmd10001), sans namespace ni custom:
+            # On extrait à partir de item['name'] ou item['id'] (ex: "custom:copper_ingot_cmd10001" -> "copper_ingot_cmd10001")
+            raw_name = item.get('name') or item.get('id') or item.get('model')
+            if not raw_name:
+                continue
+            # Retire le namespace ou le préfixe custom:
+            if ':' in raw_name:
+                model_name = raw_name.split(':', 1)[1]
+            else:
+                model_name = raw_name
+            model_name = os.path.splitext(os.path.basename(str(model_name)))[0]
+
+            # Recherche le chemin de la texture (ex: textures/minecraft/item/cactus/bow_1)
+            tex_path = None
+            if 'texture' in item:
+                tex = item['texture']
+                # Nettoyage du chemin :
+                # 1. Si "textures/" déjà présent, on retire "minecraft/item/" et remplace les : par /
+                if tex.startswith('textures/'):
+                    tex_path = tex.replace('minecraft/item/', '').replace(':', '/').replace('.png','')
+                # 2. Si "minecraft:" présent, on retire le préfixe et remplace : par /
+                elif tex.startswith('minecraft:'):
+                    tex_path = 'textures/' + tex.split(':',1)[1].replace(':', '/').replace('.png','')
+                # 3. Si "namespace:..." (autre que minecraft), on remplace : par /
+                elif ':' in tex:
+                    tex_path = 'textures/' + tex.replace(':', '/').replace('.png','')
+                else:
+                    tex_path = f'textures/{tex}'.replace('.png','')
+            else:
+                tex_path = f'textures/{model_name}'
+
+            abs_tex_path = os.path.join(BEDROCK_RP_DIR, *tex_path.split('/')) + '.png'
+            texture_data[model_name] = {"textures": tex_path}
+
+        item_texture = {
+            "resource_pack_name": "custom_items",
+            "texture_name": "atlas.items",
+            "texture_data": texture_data
+        }
+        os.makedirs(textures_dir, exist_ok=True)
+        out_path = os.path.join(textures_dir, "item_texture.json")
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(item_texture, f, indent=2)
+        if hasattr(self, 'log'):
+            self.log(t("item_texture_generated") if 'item_texture_generated' in globals() else f"item_texture.json generated: {out_path}")
+        else:
+            print(f"item_texture.json generated: {out_path}")
+
+        # Ajout : Génération d'un fichier terrain_texture.json vide (structure Geyser)
+        terrain_texture = {
+            "resource_pack_name": "geyser_custom",
+            "texture_name": "atlas.terrain",
+            "texture_data": {}
+        }
+        terrain_path = os.path.join(textures_dir, "terrain_texture.json")
+        with open(terrain_path, 'w', encoding='utf-8') as f:
+            json.dump(terrain_texture, f, indent=2)
+        if hasattr(self, 'log'):
+            self.log(f"terrain_texture.json generated: {terrain_path}")
+        else:
+            print(f"terrain_texture.json generated: {terrain_path}")
+
     def __init__(self, root):
         self.root = root
         self.root.title("PackConverter Java ➔ Bedrock")
@@ -1499,6 +1573,14 @@ class PackConverterGUI:
         self.geyser_v2_radio = tk.Radiobutton(geyser_frame, text=t("geyser_mapping_v2"), variable=self.geyser_mapping_var, value="v2")
         self.geyser_v2_radio.pack(side="left")
         # --- End Geyser mapping format option ---
+
+        # --- Render Controller option ---
+        self.use_custom_render_controller = tk.BooleanVar(value=False)
+        rc_frame = tk.Frame(root)
+        rc_frame.pack(anchor="ne", padx=10, pady=(0, 0))
+        self.rc_checkbox = tk.Checkbutton(rc_frame, text="Custom Render Controller", variable=self.use_custom_render_controller)
+        self.rc_checkbox.pack(side="left")
+        # --- End Render Controller option ---
 
         # Modern Card-like Frame
         self.main_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
@@ -1696,6 +1778,27 @@ class PackConverterGUI:
             # Génération des fichiers de langue Bedrock
             write_lang_files(lang_dict, os.path.join(BEDROCK_RP_DIR, "texts"))
 
+            # --- Création des render controllers uniquement si activé ---
+            if self.use_custom_render_controller.get():
+                rc_dir = os.path.join(BEDROCK_RP_DIR, "render_controllers")
+                os.makedirs(rc_dir, exist_ok=True)
+                # Génération des fichiers render_controller.json pour chaque item
+                for item in items:
+                    output_name = item['name'].split(":")[-1]
+                    rc_path = os.path.join(rc_dir, f"{output_name}.render_controller.json")
+                    rc_data = {
+                        "format_version": "1.10.0",
+                        "render_controllers": {
+                            f"controller.render.{output_name}": {
+                                "geometry": f"geometry.{output_name}",
+                                "materials": ["material.default"],
+                                "textures": [output_name]
+                            }
+                        }
+                    }
+                    with open(rc_path, 'w', encoding='utf-8') as f:
+                        json.dump(rc_data, f, indent=4)
+
             # --- Génération des fichiers attachable pour chaque item custom ---
             attachable_dir = os.path.join(BEDROCK_RP_DIR, "attachables")
             os.makedirs(attachable_dir, exist_ok=True)
@@ -1706,6 +1809,11 @@ class PackConverterGUI:
                     texture_ref = f"textures/{namespace}/{texture_path}"
                 else:
                     texture_ref = f"textures/minecraft/{texture_key}"
+                # Render controller custom ou défaut selon l'option GUI
+                if self.use_custom_render_controller.get():
+                    rc_list = [f"controller.render.{output_name}"]
+                else:
+                    rc_list = ["controller.render.item_default"]
                 attachable = {
                     "format_version": "1.10.0",
                     "minecraft:attachable": {
@@ -1714,7 +1822,7 @@ class PackConverterGUI:
                             "materials": {"default": "material.default"},
                             "textures": {"default": texture_ref},
                             "geometry": {"default": f"geometry.{output_name}"},
-                            "render_controllers": [f"controller.render.{output_name}"]
+                            "render_controllers": rc_list
                         }
                     }
                 }
@@ -1734,9 +1842,22 @@ class PackConverterGUI:
                     identifier = f"custom:{output_name}"
                 _generate_attachable_json_full(output_name, texture_key, geometry, attachable_dir, identifier)
 
+            # Génération du fichier item_texture.json dans textures/
+            self.generate_item_texture_json(items, os.path.join(BEDROCK_RP_DIR, "textures"))
+
             # Affiche le temps de conversion AVANT l'étape d'export utilisateur
             elapsed = time.time() - start_time
             self.log(f"Conversion terminée en {elapsed:.2f} secondes (hors export).")
+
+            # --- SUPPRESSION DU DOSSIER render_controllers SI NON UTILISÉ ---
+            if not self.use_custom_render_controller.get():
+                rc_dir = os.path.join(BEDROCK_RP_DIR, "render_controllers")
+                if os.path.isdir(rc_dir):
+                    try:
+                        shutil.rmtree(rc_dir)
+                        self.log("Dossier render_controllers supprimé (option décochée).")
+                    except Exception as e:
+                        self.log(f"Erreur lors de la suppression de render_controllers: {e}")
 
             # Sélection du dossier de sortie par l'utilisateur
             output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie")
