@@ -1,4 +1,5 @@
 import os
+import subprocess
 import shutil
 import json
 import uuid
@@ -9,23 +10,192 @@ from tkinter import ttk
 import datetime
 import hashlib
 from decimal import Decimal, ROUND_HALF_UP
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
+
+# --- Auto-install required packages if missing ---
+def ensure_package(pkg, import_name=None):
+    import_name = import_name or pkg
+    try:
+        __import__(import_name)
+        return True
+    except ImportError:
+        print(f"[Setup] Installation du package requis : {pkg}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+        try:
+            __import__(import_name)
+            return True
+        except ImportError:
+            print(f"[Setup] Erreur lors de l'installation de {pkg}. Veuillez l'installer manuellement.")
+            return False
+
+# Vérifie et installe Pillow, PyYAML, orjson si besoin
+PIL_AVAILABLE = ensure_package("Pillow", "PIL")
+YAML_AVAILABLE = ensure_package("PyYAML", "yaml")
+ORJSON_AVAILABLE = ensure_package("orjson")
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
+import glob
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+
+# --- TRANSLATIONS block and t() function must be defined before any use of t() ---
+TRANSLATIONS = {
+    "fr": {
+        "select_java_dir": "Dossier Resource Pack Java:",
+        "select_bedrock_dir": "Dossier Resource Pack Bedrock:",
+        "browse": "Parcourir",
+        "start_conversion": "Lancer la conversion",
+        "logs": "Logs:",
+        "conversion_done": "✅ Conversion terminée.",
+        "conversion_success": "Conversion terminée avec succès !",
+        "conversion_error": "Erreur lors de la conversion : {e}",
+        "error": "❌ Erreur : {e}",
+        "choose_language": "Langue",
+        "success": "Succès",
+        "error_title": "Erreur",
+        "start_console": "⏳ Démarrage conversion (mode console)...",
+        "console_done": "✅ Conversion terminée.",
+        "no_java_dir": "❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.",
+        "deleted_folder": "🪟 Dossier supprimé : {target}",
+        "all_textures_copied": "📁 Toutes les textures item copiées.",
+        "sounds_copied": "🔊 Sons copiés + sound_definitions.json généré.",
+        "no_sounds": "🔇 Aucun son trouvé à copier.",
+        "manifest_generated": "📝 Manifest généré.",
+        "geo_validation": "🔍 Validation des fichiers .geo.json...",
+        "geo_validation_done": "✅ Validation terminée ({count} fichiers .geo.json valides)",
+        "custom_items_generated": "✅ custom_items.json généré",
+        "item_texture_generated": "✅ item_texture.json généré",
+        "geyser_mapping_generated": "✅ Fichier geyser-mapping.json généré correctement.",
+        "mcpack_created": "✅ Fichier .mcpack créé : {mcpack_path}",
+        "coherence_validation": "🔎 Validation de cohérence entre les fichiers...",
+        "coherence_validation_done": "✅ Validation cohérence terminée ({valid} valides / {total} total)",
+        "missing_geo": "❌ GEO manquant : {name}.geo.json",
+        "missing_rc": "❌ Render controller manquant : {name}.render_controller.json",
+        "bad_geometry": "⚠️ Mauvais identifiant de géométrie : {actual} (attendu: {expected})",
+        "missing_texture": "❌ Fichier texture manquant : {expected_texture}",
+        "pack_icon_copied": "🖼️ pack_icon.png copié depuis pack.png",
+        "no_pack_icon": "⚠️ Aucun pack.png trouvé à copier.",
+        "java_assets_structure": "🔍 Structure du pack Java assets :",
+        "clear_logs": "Effacer les logs",
+        "export_format": "Format d'export :",
+        "writing_geo_file": "💾 Écriture du fichier GEO : {out_geo}",
+        "writing_render_controller_file": "💾 Écriture du fichier RenderController : {out_rc}",
+        "conversion_success_advanced": "✅ Conversion avancée réussie: {output_name}",
+        "conversion_model_error": "❌ Conversion modèle {model_path}: {error}",
+        "missing_yaml_module": "❌ Le module YAML n'est pas installé. Veuillez l'installer avec `pip install pyyaml`.",
+        "model_not_found": "❌ Modèle non trouvé : {rel}",
+        "texture_not_found": "❌ Texture non trouvée dans le modèle {model_path} : {error}",
+        "assets_folder_not_found": "❌ Dossier assets non trouvé dans le pack Java.",
+        "pillow_not_installed": "❌ Le module Pillow n'est pas installé. Veuillez l'installer avec `pip install Pillow`.",
+        "png8_generated": "✅ PNG8 généré : {dst}",
+        "png8_error": "❌ Erreur lors de la génération du PNG8 depuis {src} : {error}",
+        "bedrock_animation_error": "❌ Erreur lors de la génération de l'animation Bedrock : {error}",
+        "attachable_generated": "✅ Fichier attachable généré : {out_path}",
+        "lang_files_generated": "✅ Fichiers de langue générés dans {out_dir}",
+        "reading_java_model": "📖 Lecture du modèle Java...",
+        "elements_and_groups": "🔍 Nombre d'éléments : {elements}, groupes : {groups}",
+        "item_texture_json_generated": "✅ item_texture.json généré",
+        "item_texture_not_found": "❌ Texture non trouvée pour l'item {item_name} : {error}",
+        "pack_exported_folder_msg": "✅ Dossier exporté : {out_dir}",
+        "pack_exported_folder_title": "Dossier exporté",
+        "pack_exported_zip_msg": "✅ Fichier .mcpack exporté : {out_zip}",
+        "pack_exported_zip_title": "Fichier .mcpack exporté",
+        "pack_exported_zip_error": "❌ Erreur lors de l'exportation du fichier .mcpack : {error}",
+        "pack_exported_zip_success": "✅ Fichier .mcpack exporté avec succès : {out_zip}",
+        "java_rp_placeholder": "Chemin du dossier Resource Pack Java (ou ZIP)",
+        "bedrock_rp_placeholder": "Chemin du dossier Resource Pack Bedrock (ou ZIP)",
+        "geyser_mapping_format": "Format Geyser Mapping :",
+        "geyser_mapping_v1": "v1 (simple)",
+        "geyser_mapping_v2": "v2 (avancé)"
+    },
+    "en": {
+        "select_java_dir": "Java Resource Pack Folder:",
+        "select_bedrock_dir": "Bedrock Resource Pack Folder:",
+        "browse": "Browse",
+        "start_conversion": "Start Conversion",
+        "logs": "Logs:",
+        "conversion_done": "✅ Conversion finished.",
+        "conversion_success": "Conversion finished successfully!",
+        "conversion_error": "Error during conversion: {e}",
+        "error": "❌ Error: {e}",
+        "choose_language": "Language",
+        "success": "Success",
+        "error_title": "Error",
+        "start_console": "⏳ Starting conversion (console mode)...",
+        "console_done": "✅ Conversion finished.",
+        "no_java_dir": "❌ JAVA_RP_DIR or BEDROCK_RP_DIR not set. Check your environment variables.",
+        "deleted_folder": "🪟 Deleted folder: {target}",
+        "all_textures_copied": "📁 All item textures copied.",
+        "sounds_copied": "🔊 Sounds copied + sound_definitions.json generated.",
+        "no_sounds": "🔇 No sounds found to copy.",
+        "manifest_generated": "📝 Manifest generated.",
+        "geo_validation": "🔍 Validating .geo.json files...",
+        "geo_validation_done": "✅ Validation done ({count} valid .geo.json files)",
+        "custom_items_generated": "✅ custom_items.json generated",
+        "item_texture_generated": "✅ item_texture.json generated",
+        "geyser_mapping_generated": "✅ geyser-mapping.json generated successfully.",
+        "mcpack_created": "✅ .mcpack file created: {mcpack_path}",
+        "coherence_validation": "🔎 Checking file consistency...",
+        "coherence_validation_done": "✅ Consistency check done ({valid} valid / {total} total)",
+        "missing_geo": "❌ Missing GEO: {name}.geo.json",
+        "missing_rc": "❌ Missing render controller: {name}.render_controller.json",
+        "bad_geometry": "⚠️ Wrong geometry identifier: {actual} (expected: {expected})",
+        "missing_texture": "❌ Missing texture file: {expected_texture}",
+        "pack_icon_copied": "🖼️ pack_icon.png copied from pack.png",
+        "no_pack_icon": "⚠️ No pack.png found to copy.",
+        "java_assets_structure": "🔍 Java pack assets structure:",
+        "clear_logs": "Clear logs",
+        "export_format": "Export format:",
+        "writing_geo_file": "💾 Writing GEO file: {out_geo}",
+        "writing_render_controller_file": "💾 Writing RenderController file: {out_rc}",
+        "conversion_success_advanced": "✅ Advanced conversion successful: {output_name}",
+        "conversion_model_error": "❌ Model conversion error {model_path}: {error}",
+        "missing_yaml_module": "❌ YAML module is not installed. Please install it with `pip install pyyaml`.",
+        "model_not_found": "❌ Model not found: {rel}",
+        "texture_not_found": "❌ Texture not found in model {model_path}: {error}",
+        "assets_folder_not_found": "❌ Assets folder not found in the Java pack.",
+        "pillow_not_installed": "❌ Pillow module is not installed. Please install it with `pip install Pillow`.",
+        "png8_generated": "✅ PNG8 generated: {dst}",
+        "png8_error": "❌ Error generating PNG8 from {src}: {error}",
+        "bedrock_animation_error": "❌ Error generating Bedrock animation: {error}",
+        "attachable_generated": "✅ Attachable file generated: {out_path}",
+        "lang_files_generated": "✅ Language files generated in {out_dir}",
+        "elements_and_groups": "🔍 Number of elements: {elements}, groups: {groups}",
+        "reading_java_model": "📖 Reading Java model...",
+        "item_texture_json_generated": "✅ item_texture.json generated",
+        "item_texture_not_found": "❌ Texture not found for item {item_name}: {error}",
+        "pack_exported_folder_msg": "✅ Folder exported: {out_dir}",
+        "pack_exported_folder_title": "Folder exported",
+        "pack_exported_zip_msg": "✅ .mcpack file exported: {out_zip}",
+        "pack_exported_zip_title": ".mcpack file exported",
+        "pack_exported_zip_error": "❌ Error exporting .mcpack file: {error}",
+        "pack_exported_zip_success": "✅ .mcpack file exported successfully: {out_zip}",
+        "java_rp_placeholder": "Path to Java Resource Pack folder (or ZIP)",
+        "bedrock_rp_placeholder": "Path to Bedrock Resource Pack folder (or ZIP)",
+        "geyser_mapping_format": "Geyser Mapping format:",
+        "geyser_mapping_v1": "v1 (simple)",
+        "geyser_mapping_v2": "v2 (advanced)"
+    }
+}
+
+LANG = "en"
+
+
+def t(key, **kwargs):
+    value = TRANSLATIONS[LANG].get(key)
+    if value is None:
+        value = key
+    return value.format(**kwargs)
 
 try:
     import yaml
 except ImportError:
-    print("Module 'yaml' non trouvé. Installe-le avec : pip install pyyaml")
+    print(t("missing_yaml_module"))
     raise
 
 # Charger les chemins depuis les variables d'environnement
-JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", r"Put the path to your Java Resource Pack here")
+JAVA_RP_DIR = os.environ.get("JAVA_RP_DIR", t("java_rp_placeholder"))
 TEMP_UNZIP_DIR = None
 
 if JAVA_RP_DIR.lower().endswith('.zip') and os.path.isfile(JAVA_RP_DIR):
@@ -37,13 +207,13 @@ else:
     if not JAVA_RP_DIR.endswith(os.sep):
         JAVA_RP_DIR += os.sep
 
-BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", r"Put the path to your Bedrock Resource Pack here")
+BEDROCK_RP_DIR = os.environ.get("BEDROCK_RP_DIR", t("bedrock_rp_placeholder"))
 if not BEDROCK_RP_DIR.endswith(os.sep):
     BEDROCK_RP_DIR += os.sep
 CUSTOM_ITEMS_FILE = "custom_items.json"
 
 if not JAVA_RP_DIR or not BEDROCK_RP_DIR:
-    raise EnvironmentError("❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.")
+    raise EnvironmentError(t("no_java_dir"))
 
 # Structure minimale
 bedrock_structure = [
@@ -70,114 +240,143 @@ def create_bedrock_structure():
     for folder in bedrock_structure:
         os.makedirs(os.path.join(BEDROCK_RP_DIR, folder), exist_ok=True)
 
-def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, source_file):
+def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, source_file, model_index=None):
     model_ref = entry.get('model', {}).get('model') or entry.get('model')
     if not model_ref:
         return
     threshold = entry.get('threshold', 0)
 
     rel = model_ref.split(':', 1)[-1] if ':' in model_ref else model_ref
-    # Recherche tous les dossiers de namespace dans assets pour trouver le modèle
-    assets_root = os.path.join(JAVA_RP_DIR, 'assets')
-    possible_paths = [
-        os.path.join(assets_root, *rel.split('/')) + '.json'
-    ]
-    # Ajoute tous les namespaces trouvés dans assets
-    if os.path.isdir(assets_root):
-        for ns in os.listdir(assets_root):
-            ns_model = os.path.join(assets_root, ns, 'models', *rel.split('/')) + '.json'
-            possible_paths.append(ns_model)
-    possible_paths.append(os.path.join(assets_root, 'minecraft', 'models', *rel.split('/')) + '.json')
-
-    model_path = next((p for p in possible_paths if os.path.isfile(p)), None)
+    # Utilisation de l'index pour lookup rapide
+    model_path = None
+    if model_index is not None:
+        # Essaye d'abord model_ref tel quel
+        if ':' in model_ref:
+            model_path = model_index.get(model_ref)
+        # Sinon, essaye tous les namespaces
+        if not model_path:
+            for ns in model_index:
+                if ns.endswith(f':{rel}'):
+                    model_path = model_index[ns]
+                    break
+    # Fallback legacy (si pas trouvé dans l'index)
     if not model_path:
-        print(f"❌ Modèle non trouvé pour {rel}")
+        assets_root = os.path.join(JAVA_RP_DIR, 'assets')
+        possible_paths = [
+            os.path.join(assets_root, *rel.split('/')) + '.json'
+        ]
+        if os.path.isdir(assets_root):
+            for ns in os.listdir(assets_root):
+                ns_model = os.path.join(assets_root, ns, 'models', *rel.split('/')) + '.json'
+                possible_paths.append(ns_model)
+        possible_paths.append(os.path.join(assets_root, 'minecraft', 'models', *rel.split('/')) + '.json')
+        model_path = next((p for p in possible_paths if os.path.isfile(p)), None)
+    if not model_path:
+        print(t("model_not_found", rel=rel))
         return
 
     texture_list = []
     try:
         with open(model_path, encoding='utf-8') as f:
             bb_model = json.load(f)
-            
-        # Handle textures with namespace preservation
         textures = bb_model.get('textures', {})
-        # First try to get the textures with their namespace
         texture_list = []
         for tex_value in textures.values():
-            # If texture has explicit namespace, preserve it
             if ':' in tex_value:
                 texture_list.append(tex_value)
             else:
-                # Try to infer namespace from model path
                 model_ns = model_path.split('assets' + os.sep)[-1].split(os.sep)[0]
                 if model_ns != 'minecraft':
                     texture_list.append(f"{model_ns}:{tex_value}")
                 else:
                     texture_list.append(tex_value)
     except Exception as e:
-        print(f"⚠️ Texture introuvable dans {model_path}: {e}")
+        print(t("texture_not_found", model_path=model_path, error=str(e)))
 
     geo_name = f"{item_base_name.lower().replace(' ', '_')}_cmd{threshold}"
-    # Use namespaced texture path if available
     tex_entry = texture_list[0] if texture_list else rel
-
+    # Correction : transformer le chemin Java en chemin Bedrock
+    # Ex : custom_stuff_v1:item/coins/1 -> textures/custom_stuff_v1/item/coins/1.png
+    if ':' in tex_entry:
+        ns, tex_path = tex_entry.split(':', 1)
+        bedrock_texture_path = f"textures/{ns}/{tex_path}.png"
+        tex_name_for_rc = f"{ns}/{tex_path}"
+    else:
+        bedrock_texture_path = f"textures/item/{tex_entry}.png"
+        tex_name_for_rc = tex_entry
     item_name = f"{item_base_name}_cmd{threshold}"
     items.append({
         "name": f"custom:{item_name}",
         "id": item_base_name,
         "custom_model_data": threshold,
         "display_name": f"§f{item_base_name.replace('_', ' ').title()} (CMD:{threshold})",
-        "texture": tex_entry  # valeur brute
+        "texture": tex_entry,
+        "bedrock_texture_path": bedrock_texture_path,
+        "tex_name_for_rc": tex_name_for_rc
     })
+    convert_java_model_to_geo(model_path, item_name, tex_entry, bedrock_texture_path, tex_name_for_rc)
 
-    convert_java_model_to_geo(model_path, item_name, tex_entry)
-
-def copy_all_item_textures(items=None):
+def copy_all_item_textures():
     """
     Copie les textures en préservant la structure du namespace original.
     Par exemple: assets/custom_stuff_v1/textures/item/... -> textures/custom_stuff_v1/item/...
     """
+    import time
+    start = time.time()
     src_root = os.path.join(JAVA_RP_DIR, 'assets')
     if not os.path.exists(src_root):
-        print("⚠️ Dossier assets non trouvé")
+        print(t("assets_folder_not_found"))
         return
-        
-    # Pour chaque namespace dans assets/
-    for ns in os.listdir(src_root):
+    copy_jobs = []
+    ns_list = os.listdir(src_root)
+    print(f"[Textures] {len(ns_list)} namespaces à traiter...")
+    for ns in ns_list:
         ns_textures = os.path.join(src_root, ns, 'textures')
         if not os.path.isdir(ns_textures):
             continue
-            
-        # Parcours récursif des textures
         for root, dirs, files in os.walk(ns_textures):
-            # Calcule le chemin relatif à partir de textures/
             rel_path = os.path.relpath(root, ns_textures)
-            # Construit le chemin de destination en préservant le namespace
             dst_path = os.path.join(BEDROCK_RP_DIR, 'textures', ns, rel_path)
-            
-            # Crée le dossier de destination
             os.makedirs(dst_path, exist_ok=True)
-            
-            # Copie les fichiers
             for file in files:
                 if file.endswith('.png'):
                     src_file = os.path.join(root, file)
                     dst_file = os.path.join(dst_path, file)
-                    shutil.copy2(src_file, dst_file)
+                    copy_jobs.append((src_file, dst_file))
+    print(f"[Textures] {len(copy_jobs)} fichiers à copier...")
+    def do_copy(src, dst):
+        shutil.copy2(src, dst)
+    run_parallel(do_copy, copy_jobs)
     print(t("all_textures_copied"))
+    print(f"[Textures] Copie terminée en {round(time.time()-start,1)}s.")
 
 import os
 import json
 import traceback
 
-def convert_java_model_to_geo(model_path, output_name, texture_key):
+# --- Patch: JSON parser rapide (orjson si dispo) ---
+try:
+    import orjson
+    def fast_json_load(f):
+        # orjson expects bytes, so read in 'rb' mode
+        if hasattr(f, 'buffer'):
+            return orjson.loads(f.buffer.read())
+        else:
+            return orjson.loads(f.read())
+except ImportError:
+    def fast_json_load(f):
+        return json.load(f)
+
+def convert_java_model_to_geo(model_path, output_name, texture_key, bedrock_texture_path=None, tex_name_for_rc=None):
+    start_time = time.time()
     try:
-        print("🔄 Lecture du modèle Java avancée")
+        print(t("reading_java_model"))
         with open(model_path, encoding='utf-8') as f:
-            model = json.load(f)
+            # Lecture RAM + parsing rapide
+            model = fast_json_load(f)
         
         # Extraire le namespace et le chemin de la texture
-        texture_namespace = "custom_stuff_v1"  # namespace par défaut
+        texture_namespace = "minecraft"  # namespace par défaut
         texture_path = texture_key
         if ":" in texture_key:
             texture_namespace, texture_path = texture_key.split(":", 1)
@@ -193,7 +392,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         bounds_offset = model.get('visible_bounds_offset', [0, 0.75, 0])
         elements = model.get('elements', [])
         groups = model.get('groups', [])
-        print(f"➡️  {len(elements)} éléments, {len(groups)} groupes")
+        print(t("elements_and_groups", elements=len(elements), groups=len(groups)))
 
         def correct_uv_mapping(face, uv_data):
             if "uv" not in uv_data or len(uv_data['uv']) != 4:
@@ -234,7 +433,7 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
                 pivot_raw = rot['origin']
                 pivot_x = round6(-pivot_raw[0] + 8)
                 pivot_y = round6(pivot_raw[1])
-                pivot_z = round6(pivot_raw[2] - 8)
+                pivot_z = round6(-pivot_raw[2] + 8)
             else:
                 pivot_x = round6(origin_x + size[0] / 2)
                 pivot_y = round6(origin_y + size[1] / 2)
@@ -376,10 +575,15 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
         }
 
         out_geo = os.path.join(BEDROCK_RP_DIR, 'models', 'entity', f'{output_name}.geo.json')
-        print(f"💾 Écriture du fichier GEO : {out_geo}")
+        os.makedirs(os.path.dirname(out_geo), exist_ok=True)
+        print(t("writing_geo_file", out_geo=out_geo))
         with open(out_geo, 'w', encoding='utf-8') as f:
             json.dump(geo, f, indent='\t', separators=(',', ': '))
 
+        # Correction: le nom de la texture dans le render_controller doit correspondre au chemin copié depuis le pack Java
+        # On utilise tex_entry (chemin brut issu du modèle Java)
+        # Remplace les ':' par '/' dans le chemin de texture pour Bedrock
+        tex_name = texture_key.replace(':', '/')
         rc = {
             "format_version": "1.8.0",
             "render_controllers": {
@@ -391,26 +595,87 @@ def convert_java_model_to_geo(model_path, output_name, texture_key):
             },
             "arrays": {
                 "textures": {
-                    f"Array.textures.{output_name}": [
-                        texture_key if ":" in texture_key else f"minecraft:{texture_key}"
-                    ]
+                    f"Array.textures.{output_name}": [tex_name]
                 }
             }
         }
         out_rc = os.path.join(BEDROCK_RP_DIR, 'render_controllers', f'{output_name}.render_controller.json')
-        print(f"💾 Écriture du fichier RenderController : {out_rc}")
+        os.makedirs(os.path.dirname(out_rc), exist_ok=True)
+        print(t("writing_render_controller_file", out_rc=out_rc))
         with open(out_rc, 'w', encoding='utf-8') as f:
             json.dump(rc, f, indent='\t', separators=(',', ': '))
-        print(f"✅ Conversion avancée réussie: {output_name}")
+        print(t("conversion_success_advanced", output_name=output_name))
+
+        # --- Génération d'une seule animation Bedrock par item ---
+        anim_dir = os.path.join(BEDROCK_RP_DIR, 'animations')
+        os.makedirs(anim_dir, exist_ok=True)
+        # Essayons d'utiliser les données display du modèle Java si elles existent
+        animation_data = None
+        try:
+            with open(model_path, encoding='utf-8') as f:
+                model_data = json.load(f)
+            display = model_data.get('display', {})
+            # Structure d'animation avancée, similaire aux exemples fournis
+            bones_anim = {}
+            # Pour chaque perspective, crée une animation si les données existent
+            for key, data in display.items():
+                # Noms de bones typiques : main_hand, off_hand, head, etc.
+                bone_name = key.lower()
+                bones_anim[bone_name] = {}
+                if 'rotation' in data:
+                    bones_anim[bone_name]['rotation'] = data['rotation']
+                if 'translation' in data:
+                    bones_anim[bone_name]['position'] = data['translation']
+                if 'scale' in data:
+                    bones_anim[bone_name]['scale'] = data['scale']
+            # Compose l'animation unique
+            animation_data = {
+                "format_version": "1.8.0",
+                "animations": {
+                    f"animation.{output_name}": {
+                        "loop": True,
+                        "bones": bones_anim
+                    }
+                }
+            }
+        except Exception as e:
+            print(f"[Animation] Erreur lors de la lecture des données display du modèle : {e}")
+        # Fallback si aucune donnée display n'est trouvée
+        if not animation_data:
+            # Utilise la position du root bone comme fallback
+            rightitem_pos = [0, 0, 0]
+            if bones:
+                root_bone = bones[0]
+                if isinstance(root_bone, dict) and "pivot" in root_bone:
+                    rightitem_pos = [float(round(v, 3)) for v in root_bone["pivot"]]
+            animation_data = {
+                "format_version": "1.8.0",
+                "animations": {
+                    f"animation.{output_name}": {
+                        "loop": True,
+                        "bones": {
+                            "main_hand": {
+                                "position": rightitem_pos
+                            }
+                        }
+                    }
+                }
+            }
+        anim_path = os.path.join(anim_dir, f"animation.{output_name}.json")
+        with open(anim_path, 'w', encoding='utf-8') as f:
+            json.dump(animation_data, f, indent=4)
+        print(f"[Animation] Animation Bedrock générée : {anim_path}")
     except Exception as e:
-        print(f"❌ Conversion modèle {model_path}: {e}")
+        print(t("conversion_model_error", model_path=model_path, error=str(e)))
         traceback.print_exc()
-        raise
+        return
+    elapsed = time.time() - start_time
+    print(f"[Profiling] Conversion {output_name} en {elapsed:.2f}s")
 
 # --- Conversion PNG8 ---
 def convert_texture_to_png8(src, dst):
     if not PIL_AVAILABLE:
-        print(f"⚠️ Pillow non installé, conversion PNG8 impossible pour {src}")
+        print(t("pillow_not_installed", src=src))
         shutil.copy2(src, dst)
         return
     try:
@@ -418,9 +683,9 @@ def convert_texture_to_png8(src, dst):
         img = Image.open(src).convert("RGBA")
         img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
         img.save(dst, optimize=True)
-        print(f"✅ PNG8 généré : {dst}")
+        print(t("png8_generated", dst=dst))
     except Exception as e:
-        print(f"❌ Erreur PNG8 {src}: {e}")
+        print(t("png8_error", src=src, error=str(e)))
         shutil.copy2(src, dst)
 
 # --- Génération animation Bedrock ---
@@ -447,7 +712,7 @@ def convert_java_display_to_bedrock_animation(model_path, geometry):
             }
         }
     except Exception as e:
-        print(f"❌ Erreur animation Bedrock: {e}")
+        print(t("bedrock_animation_error", error=str(e)))
         return {}
 
 # --- Génération attachable Bedrock ---
@@ -461,6 +726,7 @@ def generate_attachable_json(output_name, texture_key, geometry, out_dir):
         # Default to minecraft namespace if none provided
         texture_ref = f"textures/minecraft/{texture_key}"
 
+    # Ajout des animations et scripts pour compatibilité Bedrock/Geyser
     attachable = {
         "format_version": "1.10.0",
         "minecraft:attachable": {
@@ -469,6 +735,16 @@ def generate_attachable_json(output_name, texture_key, geometry, out_dir):
                 "materials": {"default": "material.default"},
                 "textures": {"default": texture_ref},
                 "geometry": {"default": f"geometry.{output_name}"},
+                "animations": {
+                    "hold_first_person": f"animation.{output_name}.hold_first_person",
+                    "hold_third_person": f"animation.{output_name}.hold_third_person"
+                },
+                "scripts": {
+                    "animate": [
+                        {"hold_first_person": "context.is_first_person == 1.0"},
+                        {"hold_third_person": "context.is_first_person == 0.0"}
+                    ]
+                },
                 "render_controllers": [f"controller.render.{output_name}"]
             }
         }
@@ -476,7 +752,7 @@ def generate_attachable_json(output_name, texture_key, geometry, out_dir):
     out_path = os.path.join(out_dir, f"{output_name}.attachable.json")
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(attachable, f, indent=4)
-    print(f"💾 Attachable généré : {out_path}")
+    print(t("attachable_generated", out_path=out_path))
 
 # --- Génération fichiers de langue Bedrock ---
 def write_lang_files(lang_dict, out_dir):
@@ -489,7 +765,7 @@ def write_lang_files(lang_dict, out_dir):
     shutil.copy(lang_path, os.path.join(out_dir, "en_GB.lang"))
     with open(os.path.join(out_dir, "languages.json"), "w", encoding="utf-8") as f:
         json.dump(["en_US", "en_GB"], f)
-    print(f"📝 Lang files générés dans {out_dir}")
+    print(t("lang_files_generated", out_dir=out_dir))
 
 # --- Orchestrateur fidèle au squelette ---
 def hash7(s):
@@ -535,50 +811,6 @@ def convert_model(model_path, item_name, generated, lang_dict, bedrock_dir):
     src_texture = os.path.join(bedrock_dir, "textures", "item", f"{item_name}.png")
     if os.path.isfile(src_texture):
         convert_texture_to_png8(src_texture, src_texture)
-
-def copy_sounds():
-    assets_path = os.path.join(JAVA_RP_DIR, 'assets')
-    sounds_dst = os.path.join(BEDROCK_RP_DIR, 'sounds', 'custom')
-    sound_definitions = {}
-    found = False
-
-    if os.path.isdir(assets_path):
-        for namespace in os.listdir(assets_path):
-            src = os.path.join(assets_path, namespace, 'sounds')
-            if os.path.isdir(src):
-                for root, _, files in os.walk(src):
-                    for file in files:
-                        if file.endswith('.ogg'):
-                            rel_path = os.path.relpath(os.path.join(root, file), src).replace('\\', '/')
-                            sound_id = f"{namespace}:{os.path.splitext(rel_path)[0]}"
-                            dest_path = os.path.join(sounds_dst, rel_path)
-                            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                            shutil.copy2(os.path.join(root, file), dest_path)
-
-                            # Détection automatique de "stream" pour les musiques longues
-                            stream = "records" in rel_path or "special" in rel_path
-
-                            sound_definitions[sound_id] = {
-                                "category": "player",
-                                "sounds": [
-                                    {
-                                        "name": f"sounds/custom/{rel_path.split('.')[0]}",
-                                        "stream": stream
-                                    }
-                                ]
-                            }
-                            found = True
-
-    if found:
-        sound_def_file = os.path.join(BEDROCK_RP_DIR, 'sound_definitions.json')
-        with open(sound_def_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                "format_version": "1.14.0",
-                "sound_definitions": sound_definitions
-            }, f, indent=4)
-        print(t("sounds_copied"))
-    else:
-        print(t("no_sounds"))
 
 def generate_manifest():
     description = "Converted Resource Pack"
@@ -634,28 +866,37 @@ def normalize_item_name(name):
 
 def generate_custom_items_json(items):
     custom_items = []
-
     for item in items:
         base_name = item['id']
         cmd = item['custom_model_data']
         texture = f"{base_name}_cmd{cmd}"
-
         clean_texture = item['texture'].replace('\\', '/').split('.')[0]
-        # Remove namespace if present
         if ':' in clean_texture:
             clean_texture = clean_texture.split(':', 1)[1]
-        # Remove leading slashes
         clean_texture = clean_texture.lstrip('/')
-        # Remove all leading 'item/'
         while clean_texture.startswith('item/'):
             clean_texture = clean_texture[5:]
+        # Correction: enlever les ':' dans le chemin de fichier
+        clean_texture = clean_texture.replace(':', '/').replace('//', '/')
         bedrock_texture_path = f"textures/item/{clean_texture}"
-
+        # Correction: vérifier la présence du fichier PNG et fallback si besoin
+        icon_name = texture
+        png_path = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{icon_name}.png")
+        if not os.path.isfile(png_path):
+            alt_icon_name = texture.replace("minecraft:", "")
+            alt_png_path = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{alt_icon_name}.png")
+            if os.path.isfile(alt_png_path):
+                icon_name = alt_icon_name
+            else:
+                alt_icon_name2 = alt_icon_name.lower()
+                alt_png_path2 = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{alt_icon_name2}.png")
+                if os.path.isfile(alt_png_path2):
+                    icon_name = alt_icon_name2
         custom_entry = {
             "name": texture,
             "id": texture,
             "components": {
-                "minecraft:icon": texture,
+                "minecraft:icon": icon_name,
                 "minecraft:render_offsets": "tools",
                 "minecraft:custom_components": {
                     "custom_model_data": float(cmd)
@@ -665,7 +906,7 @@ def generate_custom_items_json(items):
                 },
                 "minecraft:material_instances": {
                     "*": {
-                        "texture": texture,
+                        "texture": icon_name,
                         "render_method": "alpha_test",
                         "face_dimming": False,
                         "ambient_occlusion": False
@@ -696,112 +937,93 @@ def generate_custom_items_json(items):
                     "value": f"§f{base_name.replace('_', ' ').title()} (CMD:{cmd})"
                 },
                 "minecraft:icon": {
-                    "texture": texture
+                    "texture": icon_name
                 }
             }
         }
-
         custom_items.append(custom_entry)
-
     output_path = os.path.join(BEDROCK_RP_DIR, "custom_items.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(custom_items, f, indent=4)
     print(t("custom_items_generated"))
 
-def extract_custom_model_data():
+def extract_custom_model_data(model_index=None):
+    start = time.time()
     items, cmd_map = [], {}
-    # Correction du chemin pour être compatible avec tous les OS et éviter les slashs/doubles-slashs
     items_dir = os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'items')
     items_dir = os.path.normpath(items_dir)
     tex_root = os.path.join(BEDROCK_RP_DIR, 'textures', 'item')
-    
     if not os.path.isdir(items_dir):
-        print(f"❌ Introuvable: {items_dir}")
+        print(t("items_folder_not_found", items_dir=items_dir))
         return items
-        
-    for r, _, fs in os.walk(items_dir):
-        for f in fs:
-            if not f.lower().endswith(('.json','.yml','.yaml')):
-                continue
-                
-            path = os.path.join(r, f)
-            try:
-                with open(path, encoding='utf-8') as pf:
-                    data = yaml.safe_load(pf) if f.lower().endswith(('.yml','.yaml')) else json.load(pf)
-                base = os.path.splitext(f)[0]
-                
-                for e in data.get('model',{}).get('entries',[]):
-                    process_model_entry(e, base, tex_root, items, cmd_map, path)
-                    
-                fb = data.get('model',{}).get('fallback',{}).get('model')
-                if fb:
-                    process_model_entry({'threshold':-1,'model':{'model':fb}}, base, tex_root, items, cmd_map, path)
-            except Exception as e:
-                print(f"❌ Erreur lecture {f}: {e}")
-                
+    file_list = [os.path.join(r, f) for r, _, fs in os.walk(items_dir) for f in fs if f.lower().endswith(('.json','.yml','.yaml'))]
+    print(f"[CustomModelData] {len(file_list)} fichiers à traiter...")
+    count = 0
+    for path in file_list:
+        f = os.path.basename(path)
+        try:
+            with open(path, encoding='utf-8') as pf:
+                data = yaml.safe_load(pf) if f.lower().endswith(('.yml','.yaml')) else json.load(pf)
+            base = os.path.splitext(f)[0]
+            for e in data.get('model',{}).get('entries',[]):
+                process_model_entry(e, base, tex_root, items, cmd_map, path, model_index=model_index)
+            fb = data.get('model',{}).get('fallback',{}).get('model')
+            if fb:
+                process_model_entry({'threshold':-1,'model':{'model':fb}}, base, tex_root, items, cmd_map, path, model_index=model_index)
+            count += 1
+            if count % 20 == 0:
+                print(f"[CustomModelData] {count}/{len(file_list)} fichiers traités...")
+        except Exception as e:
+            print(t("read_error", file=f, error=str(e)))
+    print(f"[CustomModelData] Extraction terminée en {round(time.time()-start,1)}s.")
     return items
 
-def list_java_assets():
-    # Affiche la structure du dossier assets Java pour debug
-    print("🔍 Structure du pack Java assets :")
-    for root, dirs, files in os.walk(os.path.join(JAVA_RP_DIR, 'assets')):
-        level = root.replace(JAVA_RP_DIR, '').count(os.sep)
-        indent = ' ' * 4 * level
-        print(f"{indent}{os.path.basename(root)}/")
-        for d in dirs:
-            print(f"{indent}    {d}/")
-        for f in files:
-            print(f"{indent}    {f}")
+# --- Indexation des modèles Java pour lookup rapide ---
+def build_model_index():
+    """
+    Parcourt tous les assets/*/models/ et indexe les modèles Java (clé: namespace:path, valeur: chemin absolu).
+    """
+    model_index = {}
+    assets_root = os.path.join(JAVA_RP_DIR, 'assets')
+    if not os.path.isdir(assets_root):
+        return model_index
+    for ns in os.listdir(assets_root):
+        ns_models = os.path.join(assets_root, ns, 'models')
+        if not os.path.isdir(ns_models):
+            continue
+        for root, _, files in os.walk(ns_models):
+            for file in files:
+                if file.endswith('.json'):
+                    rel_path = os.path.relpath(os.path.join(root, file), ns_models)
+                    key = f"{ns}:{rel_path[:-5].replace(os.sep, '/')}"  # sans .json
+                    model_index[key] = os.path.join(root, file)
+    return model_index
 
-def generate_item_texture_json(items):
-    texture_data = {}
-    for item in items:
-        texture_path = item['texture']  # Use original texture path
-        cmd = item.get('custom_model_data', '')
-        item_id = item['id']
-
-        # Create a unique identifier for items with custom model data
-        texture_id = f"{item_id}_cmd{cmd}" if cmd else item_id
-
-        # Handle namespaced texture paths
-        if ':' in texture_path:
-            namespace, path = texture_path.split(':', 1)
-            # Corrige le chemin pour Bedrock : retire le segment 'item/' après le namespace
-            if path.startswith('item/'):
-                path = path[len('item/'):]
-            texture_data[texture_id] = {
-                "textures": f"textures/{namespace}/{path}"
-            }
+def build_targeted_model_index(model_refs):
+    """
+    Indexe uniquement les modèles Java référencés dans model_refs (set de clés namespace:path).
+    """
+    start = time.time()
+    model_index = {}
+    assets_root = os.path.join(JAVA_RP_DIR, 'assets')
+    # Regroupe les refs par namespace pour limiter les parcours
+    ns_to_paths = {}
+    for ref in model_refs:
+        if ':' in ref:
+            ns, rel = ref.split(':', 1)
         else:
-            # Try to infer namespace from item id
-            if ':' in item_id:
-                namespace = item_id.split(':', 1)[0]
-                # Corrige le chemin pour Bedrock : retire le segment 'item/' après le namespace
-                path = texture_path
-                if path.startswith('item/'):
-                    path = path[len('item/'):]
-                texture_data[texture_id] = {
-                    "textures": f"textures/{namespace}/{path}"
-                }
-            else:
-                # Default to minecraft namespace as fallback
-                path = texture_path
-                if path.startswith('item/'):
-                    path = path[len('item/'):]
-                texture_data[texture_id] = {
-                    "textures": f"textures/minecraft/{path}"
-                }
-
-    item_texture = {
-        "resource_pack_name": "Converted Resource Pack",
-        "texture_name": "atlas.items",
-        "texture_data": texture_data
-    }
-
-    out_path = os.path.join(BEDROCK_RP_DIR, "textures", "item_texture.json")
-    with open(out_path, 'w', encoding='utf-8') as f:
-        json.dump(item_texture, f, indent=4)
-    print(t("item_texture_generated"))
+            ns, rel = 'minecraft', ref
+        ns_to_paths.setdefault(ns, set()).add(rel)
+    for ns, rels in ns_to_paths.items():
+        ns_models = os.path.join(assets_root, ns, 'models')
+        if not os.path.isdir(ns_models):
+            continue
+        for rel in rels:
+            model_path = os.path.join(ns_models, *rel.split('/')) + '.json'
+            if os.path.isfile(model_path):
+                model_index[f"{ns}:{rel}"] = model_path
+    print(f"[Index ciblé] {len(model_index)}/{len(model_refs)} modèles référencés indexés en {round(time.time()-start,2)}s.")
+    return model_index
 
 def generate_behavior_pack(items):
     bp_dir = BEDROCK_RP_DIR.replace('bedrock', 'behavior')
@@ -866,36 +1088,76 @@ def generate_behavior_pack(items):
     print(f"✅ Behavior pack généré ({len(items)} items)")
 
 
-def generate_geyser_mapping_json(items):
+def generate_geyser_mapping_json(items, mapping_version="v2"):
     """
-    Génère un mapping Geyser v2 conforme à l'API ItemMappings.
-    Voir https://github.com/eclipseisoffline/geyser-example-mappings
+    Génère un mapping Geyser v1 ou v2 selon la doc officielle :
+    https://geysermc.org/wiki/geyser/custom-items/
     """
-    mappings = {
-        "format_version": 2,
-        "items": {}
-    }
-
-    for item in items:
-        base_item = item['id'] if item['id'].startswith("minecraft:") else f"minecraft:{item['id']}"
-        cmd = str(item['custom_model_data'])
-        unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
-
-        if base_item not in mappings["items"]:
-            mappings["items"][base_item] = []
-
-        mappings["items"][base_item].append({
-            "custom_model_data": cmd,
-            "bedrock_identifier": f"custom:{unique_name}",
-            "display_name": item.get("display_name", ""),
-            "texture": unique_name,
-            "geometry": f"geometry.{unique_name}"
-        })
-
-    output_path = os.path.join(BEDROCK_RP_DIR, "geyser-mapping.json")
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(mappings, f, indent=4)
-    print("✅ geyser-mapping.json generated in resource pack")
+    if mapping_version == "v1":
+        # v1: mapping objet {format_version: 1, items: {...}}
+        mappings = {
+            "format_version": 1,
+            "items": {}
+        }
+        for item in items:
+            base_item = item['id'] if item['id'].startswith("minecraft:") else f"minecraft:{item['id']}"
+            cmd = int(item['custom_model_data'])
+            unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
+            # Correction: l'icon doit correspondre exactement au nom du fichier PNG dans textures/item/
+            # On vérifie la présence du fichier et on corrige le nom si besoin
+            icon_name = unique_name
+            # Vérification stricte du fichier PNG
+            png_path = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{icon_name}.png")
+            if not os.path.isfile(png_path):
+                # Essai fallback: enlever "minecraft:" si présent
+                alt_icon_name = unique_name.replace("minecraft:", "")
+                alt_png_path = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{alt_icon_name}.png")
+                if os.path.isfile(alt_png_path):
+                    icon_name = alt_icon_name
+                else:
+                    # Essai fallback: tout en minuscule
+                    alt_icon_name2 = alt_icon_name.lower()
+                    alt_png_path2 = os.path.join(BEDROCK_RP_DIR, "textures", "item", f"{alt_icon_name2}.png")
+                    if os.path.isfile(alt_png_path2):
+                        icon_name = alt_icon_name2
+            # Ajoute l'entrée dans le bon tableau
+            if base_item not in mappings["items"]:
+                mappings["items"][base_item] = []
+            mappings["items"][base_item].append({
+                "name": unique_name,
+                "allow_offhand": True,
+                "display_name": item.get("display_name", unique_name),
+                "custom_model_data": cmd,
+                "icon": icon_name
+            })
+        # Nom du fichier correct
+        output_path = os.path.join(BEDROCK_RP_DIR, "Bconverted_Geyser_Mapping.json")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(mappings, f, indent=4)
+        print("✅ Bconverted_Geyser_Mapping.json (v1) generated in resource pack")
+    else:
+        # v2: Mapping par item (déjà présent dans ton code)
+        mappings = {
+            "format_version": 2,
+            "items": {}
+        }
+        for item in items:
+            base_item = item['id'] if item['id'].startswith("minecraft:") else f"minecraft:{item['id']}"
+            cmd = str(item['custom_model_data'])
+            unique_name = f"{item['id']}_cmd{item['custom_model_data']}"
+            if base_item not in mappings["items"]:
+                mappings["items"][base_item] = []
+            mappings["items"][base_item].append({
+                "custom_model_data": cmd,
+                "bedrock_identifier": f"custom:{unique_name}",
+                "display_name": item.get("display_name", ""),
+                "texture": unique_name,
+                "geometry": f"geometry.{unique_name}"
+            })
+        output_path = os.path.join(BEDROCK_RP_DIR, "geyser-mapping.json")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(mappings, f, indent=4)
+        print("✅ geyser-mapping.json (v2) generated in resource pack")
 
 
 def create_mcpack(source_dir, output_dir, pack_name):
@@ -936,10 +1198,24 @@ def validate_consistency(items):
     custom_items_path = os.path.join(BEDROCK_RP_DIR, "custom_items.json")
     errors = 0
 
+
     for item in items:
         name = item["name"].split(":")[-1]
+        # Correction stricte : vérifier la présence du PNG avec tous les fallback utilisés dans le script
         tex_key = item.get("texture", "")
-        expected_texture = os.path.join(tex_path, tex_key + ".png")
+        icon_name = name
+        png_path = os.path.join(tex_path, f"{icon_name}.png")
+        if not os.path.isfile(png_path):
+            alt_icon_name = icon_name.replace("minecraft:", "")
+            alt_png_path = os.path.join(tex_path, f"{alt_icon_name}.png")
+            if os.path.isfile(alt_png_path):
+                icon_name = alt_icon_name
+            else:
+                alt_icon_name2 = alt_icon_name.lower()
+                alt_png_path2 = os.path.join(tex_path, f"{alt_icon_name2}.png")
+                if os.path.isfile(alt_png_path2):
+                    icon_name = alt_icon_name2
+        expected_texture = os.path.join(tex_path, f"{icon_name}.png")
 
         geo_file = os.path.join(geo_path, f"{name}.geo.json")
         rc_file = os.path.join(rc_path, f"{name}.render_controller.json")
@@ -961,13 +1237,16 @@ def validate_consistency(items):
             if actual_geometry != expected_geometry:
                 print(t("bad_geometry", actual=actual_geometry, expected=expected_geometry))
                 errors += 1
-
-            tex_array = rc.get("arrays", {}).get("textures", {}).get(f"Array.textures.{name}", [])
-            if not tex_array or not os.path.isfile(os.path.join(BEDROCK_RP_DIR, tex_array[0] + ".png")):
-                print(t("missing_texture", expected_texture=os.path.join(BEDROCK_RP_DIR, tex_array[0] + ".png") if tex_array else ""))
-                errors += 1
+            # Vérifie aussi que le nom de la texture dans le render_controller correspond au PNG
+            tex_array = rc.get("arrays", {}).get("textures", {})
+            arr_key = f"Array.textures.{name}"
+            if arr_key in tex_array:
+                rc_tex = tex_array[arr_key][0]
+                if rc_tex != icon_name:
+                    print(f"[Validation] RenderController texture array: '{rc_tex}' ne correspond pas au PNG '{icon_name}'")
+                    errors += 1
         except Exception as e:
-            print(f"❌ Erreur lecture {name}.render_controller.json: {e}")
+            print(f"[Validation] Erreur lecture RC {rc_file}: {e}")
             errors += 1
 
         if not os.path.isfile(expected_texture):
@@ -986,94 +1265,176 @@ def copy_pack_icon():
         print(t("no_pack_icon"))
 
 
-TRANSLATIONS = {
-    "fr": {
-        "select_java_dir": "Dossier Resource Pack Java:",
-        "select_bedrock_dir": "Dossier Resource Pack Bedrock:",
-        "browse": "Parcourir",
-        "start_conversion": "Lancer la conversion",
-        "logs": "Logs:",
-        "conversion_done": "✅ Conversion terminée.",
-        "conversion_success": "Conversion terminée avec succès !",
-        "conversion_error": "Erreur lors de la conversion : {e}",
-        "error": "❌ Erreur : {e}",
-        "choose_language": "Langue",
-        "success": "Succès",
-        "error_title": "Erreur",
-        "start_console": "⏳ Démarrage conversion (mode console)...",
-        "console_done": "✅ Conversion terminée.",
-        "no_java_dir": "❌ JAVA_RP_DIR ou BEDROCK_RP_DIR n'est pas défini. Vérifie que les variables d'environnement sont bien passées.",
-        "deleted_folder": "🪟 Dossier supprimé : {target}",
-        "all_textures_copied": "📁 Toutes les textures item copiées.",
-        "sounds_copied": "🔊 Sons copiés + sound_definitions.json généré.",
-        "no_sounds": "🔇 Aucun son trouvé à copier.",
-        "manifest_generated": "📝 Manifest généré.",
-        "geo_validation": "🔍 Validation des fichiers .geo.json...",
-        "geo_validation_done": "✅ Validation terminée ({count} fichiers .geo.json valides)",
-        "custom_items_generated": "✅ custom_items.json généré",
-        "item_texture_generated": "✅ item_texture.json généré",
-        "geyser_mapping_generated": "✅ Fichier geyser-mapping.json généré correctement.",
-        "mcpack_created": "✅ Fichier .mcpack créé : {mcpack_path}",
-        "coherence_validation": "🔎 Validation de cohérence entre les fichiers...",
-        "coherence_validation_done": "✅ Validation cohérence terminée ({valid} valides / {total} total)",
-        "missing_geo": "❌ GEO manquant : {name}.geo.json",
-        "missing_rc": "❌ Render controller manquant : {name}.render_controller.json",
-        "bad_geometry": "⚠️ Mauvais identifiant de géométrie : {actual} (attendu: {expected})",
-        "missing_texture": "❌ Fichier texture manquant : {expected_texture}",
-        "pack_icon_copied": "🖼️ pack_icon.png copié depuis pack.png",
-        "no_pack_icon": "⚠️ Aucun pack.png trouvé à copier.",
-    },
-    "en": {
-        "select_java_dir": "Java Resource Pack Folder:",
-        "select_bedrock_dir": "Bedrock Resource Pack Folder:",
-        "browse": "Browse",
-        "start_conversion": "Start Conversion",
-        "logs": "Logs:",
-        "conversion_done": "✅ Conversion finished.",
-        "conversion_success": "Conversion finished successfully!",
-        "conversion_error": "Error during conversion: {e}",
-        "error": "❌ Error: {e}",
-        "choose_language": "Language",
-        "success": "Success",
-        "error_title": "Error",
-        "start_console": "⏳ Starting conversion (console mode)...",
-        "console_done": "✅ Conversion finished.",
-        "no_java_dir": "❌ JAVA_RP_DIR or BEDROCK_RP_DIR not set. Check your environment variables.",
-        "deleted_folder": "🪟 Deleted folder: {target}",
-        "all_textures_copied": "📁 All item textures copied.",
-        "sounds_copied": "🔊 Sounds copied + sound_definitions.json generated.",
-        "no_sounds": "🔇 No sounds found to copy.",
-        "manifest_generated": "📝 Manifest generated.",
-        "geo_validation": "🔍 Validating .geo.json files...",
-        "geo_validation_done": "✅ Validation done ({count} valid .geo.json files)",
-        "custom_items_generated": "✅ custom_items.json generated",
-        "item_texture_generated": "✅ item_texture.json generated",
-        "geyser_mapping_generated": "✅ geyser-mapping.json generated successfully.",
-        "mcpack_created": "✅ .mcpack file created: {mcpack_path}",
-        "coherence_validation": "🔎 Checking file consistency...",
-        "coherence_validation_done": "✅ Consistency check done ({valid} valid / {total} total)",
-        "missing_geo": "❌ Missing GEO: {name}.geo.json",
-        "missing_rc": "❌ Missing render controller: {name}.render_controller.json",
-        "bad_geometry": "⚠️ Wrong geometry identifier: {actual} (expected: {expected})",
-        "missing_texture": "❌ Missing texture file: {expected_texture}",
-        "pack_icon_copied": "🖼️ pack_icon.png copied from pack.png",
-        "no_pack_icon": "⚠️ No pack.png found to copy.",
-    }
-}
+def copy_sounds():
+    """
+    Copies all .ogg files from all namespaces in the Java resource pack to the Bedrock pack,
+    and generates a sound_definitions.json compatible with Bedrock.
+    """
+    assets_path = os.path.join(JAVA_RP_DIR, 'assets')
+    sounds_dst = os.path.join(BEDROCK_RP_DIR, 'sounds', 'custom')
+    sound_definitions = {}
+    found = False
 
-LANG = "en"
+    if os.path.isdir(assets_path):
+        for namespace in os.listdir(assets_path):
+            src = os.path.join(assets_path, namespace, 'sounds')
+            if os.path.isdir(src):
+                for root, _, files in os.walk(src):
+                    for file in files:
+                        if file.endswith('.ogg'):
+                            rel_path = os.path.relpath(os.path.join(root, file), src).replace('\\', '/').replace('\\', '/')
+                            sound_id = f"{namespace}:{os.path.splitext(rel_path)[0]}"
+                            dest_path = os.path.join(sounds_dst, rel_path)
+                            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                            shutil.copy2(os.path.join(root, file), dest_path)
+
+                            # Detect if this is a stream (long music)
+                            stream = "records" in rel_path or "special" in rel_path
+                            sound_definitions[sound_id] = {
+                                "category": "player",
+                                "sounds": [
+                                    {
+                                        "name": f"sounds/custom/{rel_path.split('.')[0]}",
+                                        "stream": stream
+                                    }
+                                ]
+                            }
+                            found = True
+
+    if found:
+        sound_def_file = os.path.join(BEDROCK_RP_DIR, 'sound_definitions.json')
+        with open(sound_def_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                "format_version": "1.14.0",
+                "sound_definitions": sound_definitions
+            }, f, indent=4)
+        print(t("sounds_copied"))
+    else:
+        print(t("no_sounds"))
+
+WORKERS = min(8, os.cpu_count() or 4)
+
+def run_parallel(func, iterable, desc=None):
+    """
+    Exécute func sur chaque élément de iterable en parallèle (ThreadPoolExecutor).
+    """
+    results = []
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = {executor.submit(func, *args): args for args in iterable}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"[Thread error] {e}")
+    return results
+
+# --- PATCH: Parallélisation de la copie des textures ---
+# (duplicate removed)
+
+# --- PATCH: Parallélisation de la conversion PNG8 ---
+def batch_convert_textures_to_png8(texture_files):
+    def convert(src, dst):
+        convert_texture_to_png8(src, dst)
+    run_parallel(convert, texture_files)
+
+# --- PATCH: Parallélisation de la génération des modèles Bedrock ---
+def batch_convert_java_models_to_geo(model_jobs):
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+    import traceback
+    import time
+    failed = []
+    results = []
+    total = len(model_jobs)
+    print(f"[Batch] Début conversion de {total} modèles...")
+    start = time.time()
+    # Filtrer les jobs mal formés
+    filtered_jobs = []
+    for job in model_jobs:
+        if isinstance(job, dict):
+            if not job.get('model_path') or not job.get('output_name') or not job.get('texture_key'):
+                print(f"[Batch] ⚠️ Job ignoré (incomplet): {job}")
+                failed.append(job)
+                continue
+        else:
+            if not job or len(job) != 3 or not all(job):
+                print(f"[Batch] ⚠️ Job ignoré (incomplet): {job}")
+                failed.append(job)
+                continue
+        filtered_jobs.append(job)
+    if not filtered_jobs:
+        print("[Batch] Aucun job valide à traiter.")
+        return failed
+    try:
+        with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+            future_to_job = {}
+            for job in filtered_jobs:
+                print(f"[Batch] Soumission du job: {job}")
+                future = executor.submit(_safe_convert_java_model_to_geo, job)
+                future_to_job[future] = job
+            for idx, future in enumerate(as_completed(future_to_job), 1):
+                job = future_to_job[future]
+                try:
+                    result = future.result(timeout=30)
+                    if result is not None and not result.get('success', False):
+                        failed.append(job)
+                        print(f"[Batch] ❌ Échec: {result.get('error', 'Erreur inconnue')} (job: {job})")
+                    else:
+                        print(f"[Batch] ✅ Succès {idx}/{total} : {job}")
+                except TimeoutError:
+                    failed.append(job)
+                    print(f"[Batch] ❌ Timeout (>30s) pour {job}")
+                except Exception as e:
+                    failed.append(job)
+                    print(f"[Batch] ❌ Exception non gérée pour {job}: {e}")
+                    traceback.print_exc()
+    except Exception as e:
+        print(f"[Batch] ❌ Exception globale dans le batch: {e}")
+        traceback.print_exc()
+        failed.extend(filtered_jobs)
+    print(f"[Batch] Conversion terminée en {round(time.time()-start,1)}s. Succès: {total - len(failed)}/{total}, Échecs: {len(failed)}")
+    if failed:
+        print(f"[Batch] Modèles échoués: {failed}")
+    return failed
+
+def _safe_convert_java_model_to_geo(job):
+    # job is expected to be a tuple or dict with model_path, output_name, texture_key
+    import traceback
+    try:
+        if isinstance(job, dict):
+            model_path = job.get('model_path')
+            output_name = job.get('output_name')
+            texture_key = job.get('texture_key')
+        else:
+            model_path, output_name, texture_key = job
+        convert_java_model_to_geo(model_path, output_name, texture_key)
+        return {'success': True}
+    except Exception as e:
+        print(f"[Batch] ❌ Exception dans _safe_convert_java_model_to_geo: {e} (job: {job})")
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+# --- PATCH: Utilisation dans le pipeline principal ---
+# Exemple d'utilisation dans un pipeline (à adapter selon le flux principal du script)
+#
+# try:
+#     failed = batch_convert_java_models_to_geo(model_jobs)
+# except Exception as e:
+#     print(f"[Global] Exception inattendue lors du batch: {e}")
+#     import traceback
+#     traceback.print_exc()
+#     failed = model_jobs  # Considérer tout échoué
+# if failed:
+#     print(f"[Global] {len(failed)} modèles n'ont pas pu être convertis. Voir logs ci-dessus.")
+# else:
+#     print("[Global] Tous les modèles ont été convertis avec succès.")
+#
+# (À placer dans run_conversion ou le pipeline principal, GUI et console)
 
 import sys
 if "--lang" in sys.argv:
     idx = sys.argv.index("--lang")
     if idx + 1 < len(sys.argv):
         LANG = sys.argv[idx + 1]
-
-def t(key, **kwargs):
-    value = TRANSLATIONS[LANG].get(key)
-    if value is None:
-        value = key
-    return value.format(**kwargs)
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'packconverter_config.json')
 
@@ -1096,7 +1457,7 @@ class PackConverterGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("PackConverter Java ➔ Bedrock")
-        self.root.geometry("650x400")
+        self.root.geometry("850x600")
         self.root.resizable(False, False)
 
         # Langue
@@ -1114,18 +1475,30 @@ class PackConverterGUI:
         self.bedrock_dir = tk.StringVar(value="")  # Ajouté pour éviter l'erreur d'attribut
 
         # --- Export format option ---
-        self.export_format_var = tk.StringVar(value="zip")
+        self.export_format_var = tk.StringVar(value="folder")
         export_frame = tk.Frame(root)
         export_frame.pack(anchor="ne", padx=10, pady=(0, 0))
-        self.export_label = tk.Label(export_frame, text="Export format:", font=("Segoe UI", 10))
+        self.export_label = tk.Label(export_frame, text=t("export_format"), font=("Segoe UI", 10))
         self.export_label.pack(side="left")
         self.export_zip_radio = tk.Radiobutton(export_frame, text="ZIP", variable=self.export_format_var, value="zip")
         self.export_zip_radio.pack(side="left")
-        self.export_folder_radio = tk.Radiobutton(export_frame, text="Folder", variable=self.export_format_var, value="folder")
+        self.export_folder_radio = tk.Radiobutton(export_frame, text=t("folder"), variable=self.export_format_var, value="folder")
         self.export_folder_radio.pack(side="left")
-        self.export_mcpack_radio = tk.Radiobutton(export_frame, text="MCPACK", variable=self.export_format_var, value="mcpack")
+        self.export_mcpack_radio = tk.Radiobutton(export_frame, text=t("mcpack"), variable=self.export_format_var, value="mcpack")
         self.export_mcpack_radio.pack(side="left")
         # --- End export format option ---
+
+        # --- Geyser mapping format option ---
+        self.geyser_mapping_var = tk.StringVar(value="v1")
+        geyser_frame = tk.Frame(root)
+        geyser_frame.pack(anchor="ne", padx=10, pady=(0, 0))
+        self.geyser_label = tk.Label(geyser_frame, text=t("geyser_mapping_format"), font=("Segoe UI", 10))
+        self.geyser_label.pack(side="left")
+        self.geyser_v1_radio = tk.Radiobutton(geyser_frame, text=t("geyser_mapping_v1"), variable=self.geyser_mapping_var, value="v1")
+        self.geyser_v1_radio.pack(side="left")
+        self.geyser_v2_radio = tk.Radiobutton(geyser_frame, text=t("geyser_mapping_v2"), variable=self.geyser_mapping_var, value="v2")
+        self.geyser_v2_radio.pack(side="left")
+        # --- End Geyser mapping format option ---
 
         # Modern Card-like Frame
         self.main_card = tk.Frame(root, bg="#f4f4f4", bd=2, relief="groove")
@@ -1152,7 +1525,7 @@ class PackConverterGUI:
         self.logs_label = tk.Label(self.logs_card, text=t("logs"), font=("Segoe UI", 11, "bold"), bg="#f4f4f4")
         self.logs_label.pack(anchor="w", padx=10, pady=(8, 0))
         # Bouton pour effacer les logs
-        self.clear_logs_btn = tk.Button(self.logs_card, text="Effacer les logs", command=self.clear_logs, font=("Segoe UI", 9), bg="#e0e0e0")
+        self.clear_logs_btn = tk.Button(self.logs_card, text=t("clear_logs"), command=self.clear_logs, font=("Segoe UI", 9), bg="#e0e0e0")
         self.clear_logs_btn.pack(anchor="e", padx=10, pady=(0, 5))
         # Progress bar
         self.progress = ttk.Progressbar(self.logs_card, orient="horizontal", mode="determinate", length=400)
@@ -1256,6 +1629,7 @@ class PackConverterGUI:
         sys.stderr = TextRedirector(self)
 
         self.convert_btn.config(state="disabled")
+        start_time = time.time()
         try:
             # Met à jour les variables globales
             global JAVA_RP_DIR, BEDROCK_RP_DIR
@@ -1275,58 +1649,99 @@ class PackConverterGUI:
                     zip_ref.extractall(temp_unzip_dir)
                 JAVA_RP_DIR = temp_unzip_dir + os.sep
 
+            geyser_mapping_format = self.geyser_mapping_var.get()
             # Barre de progression et étapes
             steps = [
-                clean_bedrock_directory,
-                create_bedrock_structure,
-                copy_all_item_textures,
-                copy_sounds,
-                copy_pack_icon,
-                generate_manifest,
-                extract_custom_model_data,
-                # Ajout : copie des textures après extraction des items
-                copy_all_item_textures,
-                generate_custom_items_json,
-                generate_item_texture_json,
-                generate_geyser_mapping_json,
-                lambda: validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity")),
-                lambda: validate_consistency(items)
+                lambda items=None: clean_bedrock_directory(),
+                lambda items=None: create_bedrock_structure(),
+                lambda items=None: copy_all_item_textures(),
+                lambda items=None: copy_sounds(),
+                lambda items=None: copy_pack_icon(),
+                lambda items=None: generate_manifest(),
+                lambda items=None: extract_custom_model_data(),
+                lambda items=None: copy_all_item_textures(),
+                lambda items: generate_custom_items_json(items),
+                lambda items: generate_geyser_mapping_json(items, geyser_mapping_format),
+                lambda items=None: validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity")),
+                lambda items: validate_consistency(items)
             ]
             self.set_progress(0, len(steps))
             items = []
             for i, step in enumerate(steps):
-                self.log("-" * 40 + f"  Étape {i+1}/{len(steps)}  " + "-" * 40)
-                if step == extract_custom_model_data:
-                    items = step()
-                elif step in (generate_custom_items_json, generate_item_texture_json, generate_geyser_mapping_json, validate_consistency):
-                    step(items)
-                else:
-                    step()
+                self.log("-" * 40 + f"  {t('step') if 'step' in TRANSLATIONS[LANG] else 'step'} {i+1}/{len(steps)}  " + "-" * 40)
+                # Always call step with items, and update items if step returns a non-None value
+                result = step(items)
+                if result is not None:
+                    items = result
                 self.set_progress(i + 1)
                 self.progress.update_idletasks()
 
             # Extraction des items custom
             items = extract_custom_model_data()
-            # Conversion avancée pour chaque item (geometry, animation, attachable, PNG8, lang)
+            # Indexation des modèles pour accélérer la recherche
+            model_index = build_model_index()
+            # Conversion avancée pour chaque item (geometry, animation, attachable, PNG8, lang) EN PARALLÈLE
+            model_jobs = []
             lang_dict = {}
             for item in items:
-                model_path = os.path.join(JAVA_RP_DIR, 'assets', 'minecraft', 'models', f"{item['texture']}.json")
-                if not os.path.isfile(model_path):
-                    # fallback: cherche dans tous les namespaces
-                    for ns in os.listdir(os.path.join(JAVA_RP_DIR, 'assets')):
-                        candidate = os.path.join(JAVA_RP_DIR, 'assets', ns, 'models', f"{item['texture']}.json")
-                        if os.path.isfile(candidate):
-                            model_path = candidate
-                            break
-                if os.path.isfile(model_path):
-                    convert_model(model_path, item['texture'], True, lang_dict, BEDROCK_RP_DIR)
+                texture_key = item['texture']
+                output_name = item['name'].split(":")[-1]
+                # Recherche directe dans l'index (avec ou sans namespace explicite)
+                model_path = model_index.get(texture_key) or model_index.get(f"minecraft:{texture_key}")
+                if model_path:
+                    model_jobs.append((model_path, output_name, texture_key))
+                lang_dict[hash7(item['name'])] = item['name']
+            # --- PATCH: Conversion des modèles en parallèle ---
+            batch_convert_java_models_to_geo(model_jobs)
             # Génération des fichiers de langue Bedrock
             write_lang_files(lang_dict, os.path.join(BEDROCK_RP_DIR, "texts"))
+
+            # --- Génération des fichiers attachable pour chaque item custom ---
+            attachable_dir = os.path.join(BEDROCK_RP_DIR, "attachables")
+            os.makedirs(attachable_dir, exist_ok=True)
+            def _generate_attachable_json_full(output_name, texture_key, geometry, out_dir, identifier):
+                # Parse the texture_key to handle namespaced paths
+                if ":" in texture_key:
+                    namespace, texture_path = texture_key.split(":", 1)
+                    texture_ref = f"textures/{namespace}/{texture_path}"
+                else:
+                    texture_ref = f"textures/minecraft/{texture_key}"
+                attachable = {
+                    "format_version": "1.10.0",
+                    "minecraft:attachable": {
+                        "description": {
+                            "identifier": identifier,
+                            "materials": {"default": "material.default"},
+                            "textures": {"default": texture_ref},
+                            "geometry": {"default": f"geometry.{output_name}"},
+                            "render_controllers": [f"controller.render.{output_name}"]
+                        }
+                    }
+                }
+                out_path = os.path.join(out_dir, f"{output_name}.attachable.json")
+                with open(out_path, 'w', encoding='utf-8') as f:
+                    json.dump(attachable, f, indent=4)
+                print(t("attachable_generated", out_path=out_path))
+            for item in items:
+                output_name = item['name'].split(":")[-1]
+                texture_key = item['texture']
+                geometry = output_name
+                # Utilise le namespace correct pour l'identifier
+                if ':' in item['name']:
+                    ns, _ = item['name'].split(':', 1)
+                    identifier = f"{ns}:{output_name}"
+                else:
+                    identifier = f"custom:{output_name}"
+                _generate_attachable_json_full(output_name, texture_key, geometry, attachable_dir, identifier)
+
+            # Affiche le temps de conversion AVANT l'étape d'export utilisateur
+            elapsed = time.time() - start_time
+            self.log(f"Conversion terminée en {elapsed:.2f} secondes (hors export).")
 
             # Sélection du dossier de sortie par l'utilisateur
             output_dir = filedialog.askdirectory(title="Sélectionnez le dossier de sortie")
             if not output_dir:
-                self.log("❌ Opération annulée : aucun dossier de sortie sélectionné.")
+                self.log(t("export_cancelled"))
                 self.set_progress(0)
                 self.convert_btn.config(state="normal")
                 return
@@ -1341,10 +1756,16 @@ class PackConverterGUI:
             # --- Fin nom fichier ---
 
             # --- Ajout : écrire les logs dans un fichier temporaire ---
-            logs_path = os.path.join(BEDROCK_RP_DIR, "conversion_logs.txt")
+            logs_path = os.path.join(output_dir, "conversion_logs.txt")
             with open(logs_path, "w", encoding="utf-8") as f:
                 f.write(self.last_logs)
             # --- Fin ajout logs ---
+            # --- Ajout : déplacer le geyser-mapping.json à côté du pack exporté ---
+            geyser_mapping_src = os.path.join(BEDROCK_RP_DIR, "geyser-mapping.json")
+            geyser_mapping_dst = os.path.join(output_dir, f"{export_name}_geyser-mapping.json")
+            if os.path.exists(geyser_mapping_src):
+                shutil.copy2(geyser_mapping_src, geyser_mapping_dst)
+            # --- Fin ajout déplacement geyser-mapping.json ---
 
             export_format = self.export_format_var.get()
             if export_format == "zip":
@@ -1355,7 +1776,7 @@ class PackConverterGUI:
                             file_path = os.path.join(rootdir, file)
                             arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
                             zipf.write(file_path, arcname)
-                self.log(f"✅ Pack exporté dans : {zip_path}")
+                self.log(t("pack_exported_zip", zip_path=zip_path))
                 messagebox.showinfo(t("success"), f"Pack exporté dans :\n{zip_path}")
             elif export_format == "mcpack":
                 mcpack_path = os.path.join(output_dir, f"{export_name}.mcpack")
@@ -1367,12 +1788,13 @@ class PackConverterGUI:
                 dest_folder = os.path.join(output_dir, export_name)
                 if os.path.exists(dest_folder):
                     shutil.rmtree(dest_folder)
+
                 shutil.copytree(BEDROCK_RP_DIR, dest_folder)
-                self.log(f"✅ Pack exporté dans le dossier : {dest_folder}")
-                messagebox.showinfo(t("success"), f"Pack exporté dans le dossier :\n{dest_folder}")
+                self.log(t("pack_exported_folder", out_dir=dest_folder))
+                messagebox.showinfo(t("success"), t("pack_exported_folder_msg", out_dir=dest_folder))
             else:
-                self.log("❌ Format d'export inconnu.")
-                messagebox.showerror(t("error_title"), "Format d'export inconnu.")
+                self.log(t("unknown_export_format"))
+                messagebox.showerror(t("error_title"), t("unknown_export_format"))
 
             self.set_progress(0)
             self.convert_btn.config(state="normal")
@@ -1389,8 +1811,13 @@ class PackConverterGUI:
         self.java_browse_btn.config(text=t("browse"))
         self.convert_btn.config(text=t("start_conversion"))
         self.logs_label.config(text=t("logs"))
-        self.clear_logs_btn.config(text="Effacer les logs" if LANG == "fr" else "Clear logs")
-        self.export_label.config(text="Format d'export :" if LANG == "fr" else "Export format:")
+        self.clear_logs_btn.config(text=t("clear_logs"))
+        self.export_label.config(text=t("export_format"))
+        self.export_folder_radio.config(text=t("folder"))
+        self.export_mcpack_radio.config(text=t("mcpack"))
+        self.geyser_label.config(text=t("geyser_mapping_format"))
+        self.geyser_v1_radio.config(text=t("geyser_mapping_v1"))
+        self.geyser_v2_radio.config(text=t("geyser_mapping_v2"))
         # Reconstruction du menu
         menu = self.lang_menu["menu"]
         menu.delete(0, "end")
@@ -1404,6 +1831,7 @@ class PackConverterGUI:
         self.update_labels()
 
 
+# --- Point d'entrée conversion (exemple) ---
 if __name__ == "__main__":
     try:
         import sys
@@ -1413,38 +1841,110 @@ if __name__ == "__main__":
             clean_bedrock_directory()
             create_bedrock_structure()
             copy_all_item_textures()
-            copy_sounds()
             copy_pack_icon()
             generate_manifest()
+            t0 = time.time()
             items = extract_custom_model_data()
-            copy_all_item_textures(items)
+            t1 = time.time()
+            print(f"[Profiling] Extraction des items : {round(t1-t0,2)}s")
+            copy_all_item_textures()
             generate_custom_items_json(items)
-            generate_item_texture_json(items)
             generate_geyser_mapping_json(items)
             validate_geo_json_files(os.path.join(BEDROCK_RP_DIR, "models", "entity"))
             validate_consistency(items)
+
+            # --- Conversion avancée des modèles en parallèle ---
+            # 1. Collecte des références de modèles
+            t2 = time.time()
+            model_refs = set()
+            for item in items:
+                tex = item['texture']
+                if ':' in tex:
+                    model_refs.add(tex)
+                else:
+                    model_refs.add(f"minecraft:{tex}")
+            print(f"[Profiling] Références de modèles collectées : {len(model_refs)}")
+            # 2. Indexation ciblée
+            model_index = build_targeted_model_index(model_refs)
+            t3 = time.time()
+            # 3. Préparation des jobs
+            model_jobs = []
+            for item in items:
+                texture_key = item['texture']
+                output_name = item['name'].split(":")[-1]
+                model_path = model_index.get(texture_key) or model_index.get(f"minecraft:{texture_key}")
+                if model_path:
+                    model_jobs.append((model_path, output_name, texture_key))
+            t4 = time.time()
+            print(f"[Profiling] Préparation des jobs : {round(t4-t3,2)}s")
+            # 4. Conversion
+            batch_convert_java_models_to_geo(model_jobs)
+            t5 = time.time()
+            print(f"[Profiling] Conversion des modèles : {round(t5-t4,2)}s")
+            # --- Génération des fichiers de langue Bedrock ---
+            lang_dict = {hash7(item['name']): item['name'] for item in items}
+            write_lang_files(lang_dict, os.path.join(BEDROCK_RP_DIR, "texts"))
+
+            # --- Génération des fichiers attachable pour chaque item custom ---
+            def generate_attachable_json_full(output_name, texture_key, geometry, out_dir, identifier):
+                # Parse the texture_key to handle namespaced paths
+                if ":" in texture_key:
+                    namespace, texture_path = texture_key.split(":", 1)
+                    texture_ref = f"textures/{namespace}/{texture_path}"
+                else:
+                    texture_ref = f"textures/minecraft/{texture_key}"
+                attachable = {
+                    "format_version": "1.10.0",
+                    "minecraft:attachable": {
+                        "description": {
+                            "identifier": identifier,
+                            "materials": {"default": "material.default"},
+                            "textures": {"default": texture_ref},
+                            "geometry": {"default": f"geometry.{output_name}"},
+                            "render_controllers": [f"controller.render.{output_name}"]
+                        }
+                    }
+                }
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, f"{output_name}.attachable.json")
+                with open(out_path, 'w', encoding='utf-8') as f:
+                    json.dump(attachable, f, indent=4)
+                print(t("attachable_generated", out_path=out_path))
+
+            attachable_dir = os.path.join(BEDROCK_RP_DIR, "attachables")
+            os.makedirs(attachable_dir, exist_ok=True)
+            for item in items:
+                output_name = item['name'].split(":")[-1]
+                texture_key = item['texture']
+                geometry = output_name
+                # Utilise le namespace correct pour l'identifier
+                if ':' in item['name']:
+                    ns, _ = item['name'].split(':', 1)
+                    identifier = f"{ns}:{output_name}"
+                else:
+                    identifier = f"custom:{output_name}"
+                generate_attachable_json_full(output_name, texture_key, geometry, attachable_dir, identifier)
+
             # Ajout : demande du dossier de sortie et création du zip
             output_dir = input("Dossier de sortie pour le ZIP : ").strip()
             if output_dir:
                 converted_name = os.path.basename(JAVA_RP_DIR.strip().rstrip("/\\"))
                 zip_path = os.path.join(output_dir, f"{converted_name}.zip")
-                import zipfile
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for rootdir, dirs, files in os.walk(BEDROCK_RP_DIR):
                         for file in files:
                             file_path = os.path.join(rootdir, file)
                             arcname = os.path.relpath(file_path, BEDROCK_RP_DIR)
                             zipf.write(file_path, arcname)
-                print(f"✅ Pack exporté dans : {zip_path}")
+                print(t("pack_exported_zip", zip_path=zip_path))
             else:
-                print("❌ Opération annulée : aucun dossier de sortie sélectionné.")
+                print(t("export_cancelled"))
             print(t("console_done"))
         else:
             # Mode GUI
             root = tk.Tk()
             app = PackConverterGUI(root)
             root.mainloop()
-            import sys
             sys.exit(0)
     except Exception as e:
         print(t("error", e=str(e)))
