@@ -239,6 +239,9 @@ def create_bedrock_structure():
     os.makedirs(BEDROCK_RP_DIR, exist_ok=True)
     for folder in bedrock_structure:
         os.makedirs(os.path.join(BEDROCK_RP_DIR, folder), exist_ok=True)
+    # Ajout : Génération automatique du manifest.json Bedrock après création de la structure
+    if 'generate_manifest' in globals():
+        generate_manifest()
 
 def process_model_entry(entry, item_base_name, texture_root, items, cmd_map, source_file, model_index=None):
     model_ref = entry.get('model', {}).get('model') or entry.get('model')
@@ -1183,6 +1186,43 @@ def copy_pack_icon():
         print(t("pack_icon_copied"))
     else:
         print(t("no_pack_icon"))
+
+def generate_manifest():
+    if not JAVA_RP_DIR or not BEDROCK_RP_DIR:
+        raise EnvironmentError("JAVA_RP_DIR and BEDROCK_RP_DIR must be set before generating manifest.")
+    description = "Converted Resource Pack"
+    packmeta_path = os.path.join(JAVA_RP_DIR, "pack.mcmeta")
+    if os.path.isfile(packmeta_path):
+        try:
+            with open(packmeta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+                description = meta.get("pack", {}).get("description", description)
+        except Exception as e:
+            print(f"⚠️ Impossible de lire la description depuis pack.mcmeta: {e}")
+
+    header_uuid = str(uuid.uuid4())
+    module_uuid = str(uuid.uuid4())
+    manifest = {
+        "format_version": 2,
+        "header": {
+            "name": "Converted Resource Pack",
+            "description": description,
+            "uuid": header_uuid,
+            "version": [1, 0, 0],
+            "min_engine_version": [1, 16, 0]
+        },
+        "modules": [
+            {
+                "type": "resources",
+                "uuid": module_uuid,
+                "version": [1, 0, 0]
+            }
+        ]
+    }
+    os.makedirs(BEDROCK_RP_DIR, exist_ok=True)
+    with open(os.path.join(BEDROCK_RP_DIR, "manifest.json"), 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=4)
+    print(t("manifest_generated"))
 
 def validate_geo_json_files(geo_dir):
     """
