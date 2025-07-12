@@ -1818,15 +1818,28 @@ class PackConverterGUI:
             # --- Génération des fichiers attachable pour chaque item custom ---
             attachable_dir = os.path.join(BEDROCK_RP_DIR, "attachables")
             os.makedirs(attachable_dir, exist_ok=True)
-            def _generate_attachable_json_full(output_name, texture_key, geometry, out_dir, identifier, generated=False, atlas_index=None, attachable_material="material.default", path_hash=None, namespace=None, model_path=None, model_name=None):
-                # Utilise exactement la même logique que generate_item_texture_json pour le chemin de texture
+            def _generate_attachable_json_full(
+                output_name, texture_key, geometry, out_dir, identifier, 
+                generated=False, atlas_index=None, attachable_material="material.default", 
+                path_hash=None, namespace=None, model_path=None, model_name=None
+            ):
+                # Détermination du namespace et du vrai nom (sans prefix)
+                if ':' in output_name:
+                    ns, base_name = output_name.split(':', 1)
+                else:
+                    ns = namespace or "custom"
+                    base_name = output_name
+
+                # La geometry et les animations utilisent toujours le nom SANS namespace
+                geometry_name = base_name
+                anim_prefix = f"animation.{geometry_name}"
+
+                # Chemin texture
                 def compute_tex_path(item_name, texture_key):
-                    # Copié de generate_item_texture_json, corrigé pour éviter 'textures/textures/'
                     if not texture_key:
                         return f"textures/{item_name}"
                     tex = texture_key
                     if tex.startswith('textures/'):
-                        # On retire le préfixe textures/ pour éviter le doublon
                         tex = tex[len('textures/'):]
                         return f"textures/{tex.replace('minecraft/item/', '').replace(':', '/').replace('.png','')}"
                     elif tex.startswith('minecraft:'):
@@ -1836,55 +1849,56 @@ class PackConverterGUI:
                     else:
                         return f'textures/{tex}'.replace('.png','')
 
-                tex_path = compute_tex_path(output_name, texture_key)
-                texture_ref = tex_path
+                tex_path = compute_tex_path(base_name, texture_key)
+
                 # Scripts logic
                 v_main = "v.main_hand = c.item_slot == 'main_hand';"
                 v_off = "v.off_hand = c.item_slot == 'off_hand';"
                 v_head = "v.head = c.item_slot == 'head';"
-                # Animations logic
-                anim_prefix = f"animation.geyser_custom.{geometry}"
+
+                # Déduire le matériel à partir du nom de la geometry (avant _cmd ou .)
+                mat_base = geometry_name.split('_cmd')[0].split('.')[0]
                 attachable = {
-                    "format_version": "1.10.0",
+                    "format_version": "1.16.100",
                     "minecraft:attachable": {
                         "description": {
-                            "identifier": f"geyser_custom:{path_hash}",
+                            "identifier": f"{ns}:{base_name}",
                             "materials": {
-                                "default": attachable_material,
-                                "enchanted": attachable_material
+                                "default": mat_base,
+                                "enchanted": "entity_alphatest_glint"
                             },
                             "textures": {
-                                # Always use the Java model's texture reference for Bedrock path
-                                "default": f"{tex_path.lstrip('/')}" if 'tex_path' in locals() else texture_ref,
+                                "default": f"{tex_path.lstrip('/')}",
                                 "enchanted": "textures/misc/enchanted_item_glint"
                             },
                             "geometry": {
-                                "default": f"geometry.geyser_custom.{geometry}"
+                                "default": f"geometry.{geometry_name}"
                             },
                             "scripts": {
                                 "pre_animation": [v_main, v_off, v_head],
                                 "animate": [
-                                    {"thirdperson_main_hand": "v.main_hand && !c.is_first_person"},
-                                    {"thirdperson_off_hand": "v.off_hand && !c.is_first_person"},
-                                    {"thirdperson_head": "v.head && !c.is_first_person"},
-                                    {"firstperson_main_hand": "v.main_hand && c.is_first_person"},
-                                    {"firstperson_off_hand": "v.off_hand && c.is_first_person"},
-                                    {"firstperson_head": "c.is_first_person && v.head"}
+                                    {"third_person_main_hand": "v.main_hand && !c.is_first_person"},
+                                    {"third_person_off_hand": "v.off_hand && !c.is_first_person"},
+                                    {"third_person_head": "v.head && !c.is_first_person"},
+                                    {"first_person_main_hand": "v.main_hand && c.is_first_person"},
+                                    {"first_person_off_hand": "v.off_hand && c.is_first_person"},
+                                    {"first_person_head": "c.is_first_person && v.head"}
                                 ]
                             },
                             "animations": {
-                                "thirdperson_main_hand": f"{anim_prefix}.thirdperson_main_hand",
-                                "thirdperson_off_hand": f"{anim_prefix}.thirdperson_off_hand",
-                                "thirdperson_head": f"{anim_prefix}.head",
-                                "firstperson_main_hand": f"{anim_prefix}.firstperson_main_hand",
-                                "firstperson_off_hand": f"{anim_prefix}.firstperson_off_hand",
-                                "firstperson_head": "animation.geyser_custom.disable"
+                                "third_person_main_hand": f"{anim_prefix}.third_person_main_hand",
+                                "third_person_off_hand": f"{anim_prefix}.third_person_off_hand",
+                                "third_person_head": f"{anim_prefix}.head",
+                                "first_person_main_hand": f"{anim_prefix}.first_person_main_hand",
+                                "first_person_off_hand": f"{anim_prefix}.first_person_off_hand",
+                                "first_person_head": "animation.disable"
                             },
                             "render_controllers": ["controller.render.item_default"]
                         }
                     }
                 }
-                out_path = os.path.join(out_dir, f"{output_name}.attachable.json")
+
+                out_path = os.path.join(out_dir, f"{base_name}.attachable.json")
                 with open(out_path, 'w', encoding='utf-8') as f:
                     json.dump(attachable, f, indent=4)
                 print(t("attachable_generated", out_path=out_path))
