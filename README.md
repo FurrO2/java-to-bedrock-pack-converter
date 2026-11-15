@@ -1,11 +1,4 @@
 ## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
-## This Converter is for TESTING ONLY AND ONLY FOR 1.21.4 RP
 
 
 # 🛠️ Java ➜ Bedrock Resource Pack Converter
